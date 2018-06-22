@@ -9,6 +9,7 @@ copyright:           "2018 Author name here"
 extra-source-files:
 - README.md
 - ChangeLog.md
+- cbits/Multimap.cpp
 
 # Metadata used when publishing your package
 # synopsis:            Short description of your package
@@ -30,6 +31,9 @@ dependencies:
 - vector-th-unbox
 
 library:
+  c-sources: cbits/Multimap.cpp
+  cc-options: -O2
+  extra-libraries: stdc++
   source-dirs: src
 
 executables:

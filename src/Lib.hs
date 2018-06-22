@@ -22,11 +22,14 @@ import Foreign.Storable
 
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Short as BS
+import qualified Data.ByteString.Char8 as BC
 import Data.IORef
 import Data.Word
 import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector.Unboxed.Mutable as V
 import Data.Vector.Unboxed.Deriving
+
+import qualified Multimap as MM
 
 import GHC.Compact
 
@@ -79,10 +82,11 @@ writeOut = do
 
 readOut :: IO ()
 readOut = do
+  mm <- MM.new
   v <- V.new 65000000
   fp <- openFile "out.cbor" ReadMode
   p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s ScheduledStop))))
-  eval v 0 0 fp "" p
+  eval mm v 0 0 fp "" p
   print "Freezing"
   v' <- V.unsafeFreeze v
   print "Compacting"
@@ -90,7 +94,7 @@ readOut = do
   print "Done"
   print $ (getCompact v'' V.! 10000000)
   where
-    eval v (!x) (!y) fp (!bs) p =  do
+    eval mm v (!x) (!y) fp (!bs) p =  do
       if x `mod` 1000000 == 0
         then do
           print x
@@ -100,15 +104,16 @@ readOut = do
         Done next _ a -> do
           p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s ScheduledStop))))
           V.write v x a
-          eval v (x + 1) (y + departureTime a) fp next p
+          MM.insert mm (BC.pack $ show $ departureTime a) (fromIntegral $ departureTime a)
+          eval mm v (x + 1) (y + departureTime a) fp next p
         Partial k -> do
           if B.length bs == 0
             then do
               bs <- B.hGet fp (1024 * 8)
               if B.length bs == 0
                 then pure ()
-                else eval v x y fp bs (Partial k)
+                else eval mm v x y fp bs (Partial k)
             else do
               r <- stToIO (k $ Just bs)
-              eval v x y fp "" r
+              eval mm v x y fp "" r
         Fail _ _ e -> print e
