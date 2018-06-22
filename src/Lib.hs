@@ -29,7 +29,7 @@ import qualified Data.Vector.Unboxed as V
 import qualified Data.Vector.Unboxed.Mutable as V
 import Data.Vector.Unboxed.Deriving
 
-import qualified Multimap as MM
+import qualified Multimap.ByteString as MM
 
 import GHC.Compact
 
@@ -87,12 +87,12 @@ readOut = do
   fp <- openFile "out.cbor" ReadMode
   p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s ScheduledStop))))
   eval mm v 0 0 fp "" p
-  print "Freezing"
-  v' <- V.unsafeFreeze v
-  print "Compacting"
-  v'' <- compact v'
-  print "Done"
-  print $ (getCompact v'' V.! 10000000)
+  -- print "Freezing"
+  -- v' <- V.unsafeFreeze v
+  -- print "Compacting"
+  -- v'' <- compact v'
+  -- print "Done"
+  -- print $ (getCompact v'' V.! 10000000)
   where
     eval mm v (!x) (!y) fp (!bs) p =  do
       if x `mod` 1000000 == 0
@@ -104,7 +104,8 @@ readOut = do
         Done next _ a -> do
           p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s ScheduledStop))))
           V.write v x a
-          MM.insert mm (BC.pack $ show $ departureTime a) (fromIntegral $ departureTime a)
+          -- MM.insert mm (B.singleton $ fromIntegral $ departureTime a) (fromIntegral $ departureTime a)
+          MM.insert mm (B.singleton $ fromIntegral x) (fromIntegral x)
           eval mm v (x + 1) (y + departureTime a) fp next p
         Partial k -> do
           if B.length bs == 0

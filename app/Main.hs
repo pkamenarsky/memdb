@@ -2,7 +2,7 @@
 
 module Main where
 
-import qualified Multimap as MM
+import qualified Multimap.ByteString as MM
 import           Lib
 
 testmmap :: IO ()

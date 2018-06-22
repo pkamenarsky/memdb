@@ -1,4 +1,4 @@
-module Multimap
+module Multimap.ByteString
   ( new
   , insert
   , lookup
@@ -18,19 +18,19 @@ import           Prelude hiding (lookup)
 data    CMultimap
 newtype Multimap = Multimap (ForeignPtr CMultimap)
 
-foreign import ccall unsafe "new_mmap"     new_mmap :: IO (Ptr CMultimap)
-foreign import ccall unsafe "&delete_mmap" delete_mmap
+foreign import ccall unsafe "new_mmap_str"     new_mmap :: IO (Ptr CMultimap)
+foreign import ccall unsafe "&delete_mmap_str" delete_mmap
   :: FunPtr (Ptr CMultimap -> IO ())
-foreign import ccall unsafe "insert_mmap"  insert_mmap
+foreign import ccall unsafe "insert_mmap_str"  insert_mmap
   :: Ptr CMultimap
   -> CString
   -> Word32
   -> IO ()
-foreign import ccall unsafe "lookup_mmap"  lookup_mmap
+foreign import ccall unsafe "lookup_mmap_str"  lookup_mmap
   :: Ptr CMultimap
   -> CString
   -> IO (Ptr Word32)
-foreign import ccall unsafe "free_result"  free_result
+foreign import ccall unsafe "free_result"      free_result
   :: Ptr Word32
   -> IO ()
 
