@@ -27,6 +27,7 @@ dependencies:
 - mmap
 - vector
 - ghc-compact
+- vector-th-unbox
 
 library:
   source-dirs: src

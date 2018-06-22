@@ -1,8 +1,12 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Lib where
 
@@ -20,8 +24,9 @@ import qualified Data.ByteString as B
 import qualified Data.ByteString.Short as BS
 import Data.IORef
 import Data.Word
-import qualified Data.Vector.Storable as V
-import qualified Data.Vector.Storable.Mutable as V
+import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector.Unboxed.Mutable as V
+import Data.Vector.Unboxed.Deriving
 
 import GHC.Compact
 
@@ -47,23 +52,10 @@ data ScheduledStop = ScheduledStop
   , atcocode      :: {-# UNPACK #-} !(Key ScheduledStop)
   } deriving (Show, Generic, Serialise)
 
-instance Storable ScheduledStop where
-  sizeOf _
-    = sizeOf (undefined :: Word32)
-    + sizeOf (undefined :: Word32)
-    + sizeOf (undefined :: Word32)
-    + sizeOf (undefined :: Word32)
-  alignment _ = 16 
-  peek ptr = ScheduledStop
-    <$> peek (castPtr ptr)
-    <*> peek (castPtr ptr `plusPtr` 4)
-    <*> peek (castPtr ptr `plusPtr` 8)
-    <*> fmap Key (peek (castPtr ptr `plusPtr` 12))
-  poke ptr (ScheduledStop a b c (Key d)) = do
-    poke (castPtr ptr) a
-    poke (castPtr ptr `plusPtr` 4) b
-    poke (castPtr ptr `plusPtr` 8) c
-    poke (castPtr ptr `plusPtr` 12) d
+derivingUnbox "ScheduledStop"
+  [t| ScheduledStop -> (Word32, Word32, Word32, Word32) |]
+  [| \(ScheduledStop a b c (Key d)) -> (a, b, c, d) |]
+  [| \(a, b, c, d) -> (ScheduledStop a b c (Key d)) |]
 
 writeOut :: IO ()
 writeOut = do
