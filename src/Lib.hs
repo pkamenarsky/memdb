@@ -86,8 +86,9 @@ readOut = do
   print "Freezing"
   v' <- V.unsafeFreeze v
   print "Compacting"
-  -- v'' <- compact v'
-  -- print "Done"
+  v'' <- compact v'
+  print "Done"
+  print $ (getCompact v'' V.! 10000000)
   where
     eval v (!x) (!y) fp (!bs) p =  do
       if x `mod` 1000000 == 0
