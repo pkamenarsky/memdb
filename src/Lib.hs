@@ -54,7 +54,7 @@ import GHC.Generics
 
 import Prelude hiding (lookup)
 
-newtype ElementOf a = ElementOf { getElementOf :: Word32 }
+newtype Offset a = Offset { getOffset :: Word32 }
   deriving (Show, Generic, Serialise)
 
 withDB :: Serialise a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
@@ -122,8 +122,8 @@ data DB    v (indexes :: [(Symbol, *)]) a = DB (Indexes indexes a) (v a)
 
 newtype CompactedVector a = CompactedVector (Compact (V.Vector a))
 
-(!) :: V.Unbox a => DB CompactedVector indexes a -> ElementOf a -> Maybe a
-(!) (DB _ (CompactedVector as)) (ElementOf index)
+(!) :: V.Unbox a => DB CompactedVector indexes a -> Offset a -> Maybe a
+(!) (DB _ (CompactedVector as)) (Offset index)
   = getCompact as V.!? fromIntegral index
 
 unindexed :: Indexes '[] a
@@ -185,16 +185,16 @@ data ScheduledStop = ScheduledStop
   { stopType      :: {-# UNPACK #-} !Word32
   , arrivalTime   :: {-# UNPACK #-} !Word32
   , departureTime :: {-# UNPACK #-} !Word32
-  , atcocode      :: {-# UNPACK #-} !(ElementOf ScheduledStop)
+  , atcocode      :: {-# UNPACK #-} !(Offset ScheduledStop)
   } deriving (Show, Generic, Serialise)
 
 derivingUnbox "ScheduledStop"
   [t| ScheduledStop -> (Word32, Word32, Word32, Word32) |]
-  [| \(ScheduledStop a b c (ElementOf d)) -> (a, b, c, d) |]
-  [| \(a, b, c, d) -> (ScheduledStop a b c (ElementOf d)) |]
+  [| \(ScheduledStop a b c (Offset d)) -> (a, b, c, d) |]
+  [| \(a, b, c, d) -> (ScheduledStop a b c (Offset d)) |]
 
 scheduledStopIndexes
-  = word32Index #atcocodeIndex (getElementOf . atcocode)
+  = word32Index #atcocodeIndex (getOffset . atcocode)
     unindexed
 
 writeOut :: IO ()
@@ -210,7 +210,7 @@ writeOut = do
               { stopType = 1
               , arrivalTime = fromIntegral x
               , departureTime = fromIntegral x
-              , atcocode = ElementOf (fromIntegral x)
+              , atcocode = Offset (fromIntegral x)
               }
             go (x + 1) write
 
@@ -302,9 +302,9 @@ readOut = do
 
 readTest = do
   db@(DB indexes _) <- readDB "out.bin"
-     $ word32Index #atcocodeIndex (getElementOf . atcocode)
+     $ word32Index #atcocodeIndex (getOffset . atcocode)
      $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
        unindexed
-  print $ db ! (ElementOf 1000000)
+  print $ db ! (Offset 1000000)
   indexes <- lookup indexes #arrDepTimeIndex 2000
   print indexes
