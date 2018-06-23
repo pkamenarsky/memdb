@@ -24,8 +24,6 @@ dependencies:
 - base >= 4.7 && < 5
 - bytestring
 - cereal
-- cborg
-- serialise
 - mmap
 - vector
 - ghc-compact

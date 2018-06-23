@@ -21,11 +21,8 @@ import Control.Concurrent
 import Control.Monad
 import Control.Monad.ST
 
-import Codec.Serialise
-import Codec.Serialise.IO
-
-import qualified Data.Serialize as SZ
-import qualified Data.Serialize.Get as SZ
+import qualified Data.Serialize as S
+import qualified Data.Serialize.Get as S
 import Data.IORef
 import Data.Monoid ((<>))
 
@@ -59,22 +56,20 @@ import Prelude hiding (lookup)
 -- TODO: define in DB.Write, only export Constructor there
 -- don't export constructor in DB.Read
 newtype Offset a = Offset { getOffset :: Word32 }
-  deriving (Show, Generic, Serialise, SZ.Serialize)
+  deriving (Show, Generic, S.Serialize)
 
 newtype Limit a  = Limit { getLimit :: Word32 }
-  deriving (Show, Generic, Serialise, SZ.Serialize)
+  deriving (Show, Generic, S.Serialize)
 
-withDB :: Serialise a => SZ.Serialize a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
+withDB :: S.Serialize a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
 withDB path f = do
   count <- newIORef (0 :: Word32)
   withFile path WriteMode $ \handle -> f $ \a -> do
     modifyIORef count (+1)
-    -- hPutSerialise handle a
-    B.hPut handle (SZ.encode a)
+    B.hPut handle (S.encode a)
   withFile (path <> ".meta") WriteMode $ \handle -> do
     count' <- readIORef count
-    -- hPutSerialise handle count'
-    B.hPut handle (SZ.encode count')
+    B.hPut handle (S.encode count')
 
 data Name (a :: Symbol) = Name
 
@@ -143,7 +138,6 @@ unindexed = Indexes ()
 
 word32Index
   :: KnownSymbol s
-  => Serialise a
   => Name s
   -> (a -> Word32)
   -> Indexes indexes a
@@ -155,7 +149,6 @@ word32Index _ f (Indexes indexes) = unsafePerformIO $ do
 
 byteStringIndex
   :: KnownSymbol s
-  => Serialise a
   => Name s
   -> (a -> B.ByteString)
   -> Indexes indexes a
@@ -167,7 +160,8 @@ byteStringIndex _ f (Indexes indexes) = unsafePerformIO $ do
 
 --------------------------------------------------------------------------------
 
-data Person = Person { name :: String, age :: Int } deriving (Generic, Show, Serialise)
+data Person = Person { name :: String, age :: Int }
+  deriving (Generic, Show, S.Serialize)
 
 personDB
   = word32Index     #ageIndex  (fromIntegral . age)
@@ -198,7 +192,7 @@ data ScheduledStop = ScheduledStop
   , arrivalTime   :: {-# UNPACK #-} !Word32
   , departureTime :: {-# UNPACK #-} !Word32
   , atcocode      :: {-# UNPACK #-} !(Offset ScheduledStop)
-  } deriving (Show, Generic, Serialise, SZ.Serialize)
+  } deriving (Show, Generic, S.Serialize)
 
 derivingUnbox "ScheduledStop"
   [t| ScheduledStop -> (Word32, Word32, Word32, Word32) |]
@@ -230,67 +224,22 @@ writeOut = do
 
 readDB
   :: forall indexes a
-  . Serialise a
-  => Insert indexes a
-  => V.Unbox a
-  => FilePath
-  -> Indexes indexes a
-  -> IO (DB CompactedVector indexes a)
-readDB path indexes = do
-  count <- readFileDeserialise (path <> ".meta") :: IO Word32
-  mm <- MMW.new
-  v <- V.new (fromIntegral count)
-  fp <- openFile path ReadMode
-  p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s a))))
-  eval mm v 0 0 fp "" p
-  print "Freezing"
-  v' <- V.unsafeFreeze v
-  print "Compacting"
-  v'' <- compact v'
-  pure $ DB indexes (CompactedVector v'')
-  where
-    eval mm v (!x) (!y) fp (!bs) p =  do
-      if x `mod` 1000000 == 0
-        then do
-          print x
-          print y
-        else pure ()
-      case p of
-        Done next _ a -> do
-          p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s a))))
-          V.write v x a
-          insertIndex indexes (fromIntegral x) a
-          eval mm v (x + 1) (y + 1) fp next p
-        Partial k -> do
-          if B.length bs == 0
-            then do
-              bs <- B.hGet fp (1024 * 8)
-              if B.length bs == 0
-                then pure ()
-                else eval mm v x y fp bs (Partial k)
-            else do
-              r <- stToIO (k $ Just bs)
-              eval mm v x y fp "" r
-        Fail _ _ e -> print e
-
-readDBSZ
-  :: forall indexes a
-  . SZ.Serialize a
+  . S.Serialize a
   => Insert indexes a
   => Show a
   => V.Unbox a
   => FilePath
   -> Indexes indexes a
   -> IO (DB CompactedVector indexes a)
-readDBSZ path indexes = do
+readDB path indexes = do
   meta <- B.readFile (path <> ".meta")
-  case SZ.decode meta :: Either String Word32 of
+  case S.decode meta :: Either String Word32 of
     Left e -> error e
     Right count -> do
       mm <- MMW.new
       v <- V.new (fromIntegral count)
       fp <- openFile path ReadMode
-      go v fp B.empty 0 (SZ.runGetPartial SZ.get)
+      go v fp B.empty 0 (S.runGetPartial S.get)
       print "Freezing"
       v' <- V.unsafeFreeze v
       print "Compacting"
@@ -302,61 +251,22 @@ readDBSZ path indexes = do
             then print x
             else pure ()
           case f bs of
-            SZ.Fail e _  -> error e
-            SZ.Partial k -> do
+            S.Fail e _  -> error e
+            S.Partial k -> do
               bs <- B.hGet handle (1024 * 4)
               if B.null bs
                 then pure ()
                 else go v handle bs x f
-            SZ.Done a bs -> do
+            S.Done a bs -> do
               V.write v x a
               insertIndex indexes (fromIntegral x) a
-              go v handle bs (x + 1) (SZ.runGetPartial SZ.get)
-
-readOut :: IO ()
-readOut = do
-  mm <- MMW.new
-  v <- V.new 65000000
-  fp <- openFile "out.cbor" ReadMode
-  p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s ScheduledStop))))
-  eval mm v 0 0 fp "" p
-  -- print "Freezing"
-  -- v' <- V.unsafeFreeze v
-  -- print "Compacting"
-  -- v'' <- compact v'
-  -- print "Done"
-  -- print $ (getCompact v'' V.! 10000000)
-  where
-    eval mm v (!x) (!y) fp (!bs) p =  do
-      if x `mod` 1000000 == 0
-        then do
-          print x
-          print y
-        else pure ()
-      case p of
-        Done next _ a -> do
-          p <- (stToIO (deserialiseIncremental :: (ST s (IDecode s ScheduledStop))))
-          V.write v x a
-          -- MM.insert mm (B.singleton $ fromIntegral $ departureTime a) (fromIntegral $ departureTime a)
-          -- MM.insert mm (B.singleton $ fromIntegral x) (fromIntegral x)
-          eval mm v (x + 1) (y + departureTime a) fp next p
-        Partial k -> do
-          if B.length bs == 0
-            then do
-              bs <- B.hGet fp (1024 * 8)
-              if B.length bs == 0
-                then pure ()
-                else eval mm v x y fp bs (Partial k)
-            else do
-              r <- stToIO (k $ Just bs)
-              eval mm v x y fp "" r
-        Fail _ _ e -> print e
+              go v handle bs (x + 1) (S.runGetPartial S.get)
 
 readTest = do
   db@(DB indexes _) <- readDBSZ "out.bin"
      $ word32Index #atcocodeIndex (getOffset . atcocode)
-     -- $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
+     $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
        unindexed
   print $ db ! (Offset 1000000)
-  indexes <- lookup indexes #atcocodeIndex 2000
+  indexes <- lookup indexes #arrDepTimeIndex 2000
   print indexes
