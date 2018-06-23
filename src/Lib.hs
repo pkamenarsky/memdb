@@ -98,26 +98,23 @@ instance {-# OVERLAPPABLE #-}
   ( MapIndexes (x:xs) a ~ (y, f, MapIndexes xs a)
   , Lookup xs s t a
   ) => Lookup (x:xs) s t a where
-    lookup (Indexes (_, _, xs) :: Indexes (x:xs) a)
-      = lookup (Indexes xs :: Indexes xs a)
+    lookup (Indexes (_, _, xs)) = lookup (Indexes xs :: Indexes xs a)
 
 class Insert indexes a where
   insertIndex :: Indexes indexes a -> Word32 -> a -> IO ()
 
-instance Insert ('(s, Word32Index a):xs) a where
-  insertIndex (Indexes (mm, f, _)) index a = do
+instance Insert '[] a where
+  insertIndex _ _ _ = pure ()
+
+instance Insert xs a => Insert ('(s, Word32Index a):xs) a where
+  insertIndex (Indexes (mm, f, xs)) index a = do
     MMW.insert mm (f a) index
+    insertIndex (Indexes xs :: Indexes xs a) index a
 
-instance Insert ('(s, ByteStringIndex a):xs) a where
-  insertIndex (Indexes (mm, f, _)) index a = do
+instance Insert xs a => Insert ('(s, ByteStringIndex a):xs) a where
+  insertIndex (Indexes (mm, f, xs)) index a = do
     MMB.insert mm (f a) index
-
-instance {-# OVERLAPPABLE #-}
-  ( MapIndexes (x:xs) a ~ (y, f, MapIndexes xs a)
-  , Insert xs a
-  ) => Insert (x:xs) a where
-    insertIndex (Indexes (_, _, xs) :: Indexes (x:xs) a) index a
-      = insertIndex (Indexes xs :: Indexes xs a) index a
+    insertIndex (Indexes xs :: Indexes xs a) index a
 
 data Indexes (indexes :: [(Symbol, *)]) a = Indexes (MapIndexes indexes a)
 data DB    v (indexes :: [(Symbol, *)]) a = DB (Indexes indexes a) (v a)
@@ -304,7 +301,8 @@ readOut = do
 readTest = do
   db@(DB indexes _) <- readDB "out.bin"
      $ word32Index #atcocodeIndex (getKey . atcocode)
+     $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
        unindexed
   print $ db ! 1000000
-  indexes <- lookup indexes #atcocodeIndex 2000
+  indexes <- lookup indexes #arrDepTimeIndex 2000
   print indexes
