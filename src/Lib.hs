@@ -54,7 +54,12 @@ import GHC.Generics
 
 import Prelude hiding (lookup)
 
+-- TODO: define in DB.Write, only export Constructor there
+-- don't export constructor in DB.Read
 newtype Offset a = Offset { getOffset :: Word32 }
+  deriving (Show, Generic, Serialise)
+
+newtype Limit a  = Limit { getLimit :: Word32 }
   deriving (Show, Generic, Serialise)
 
 withDB :: Serialise a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
@@ -125,6 +130,9 @@ newtype CompactedVector a = CompactedVector (Compact (V.Vector a))
 (!) :: V.Unbox a => DB CompactedVector indexes a -> Offset a -> Maybe a
 (!) (DB _ (CompactedVector as)) (Offset index)
   = getCompact as V.!? fromIntegral index
+
+slice :: V.Unbox a => DB CompactedVector indexes a -> Offset a -> Limit a -> [a]
+slice = undefined
 
 unindexed :: Indexes '[] a
 unindexed = Indexes ()
