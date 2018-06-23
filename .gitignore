@@ -2,3 +2,5 @@
 memdb.cabal
 *~
 *.cbor
+*.bin
+*.bin.meta
