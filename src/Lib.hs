@@ -54,7 +54,8 @@ import GHC.Generics
 
 import Prelude hiding (lookup)
 
-newtype Key a = Key { getKey :: Word32 } deriving (Show, Generic, Serialise)
+newtype ElementOf a = ElementOf { getElementOf :: Word32 }
+  deriving (Show, Generic, Serialise)
 
 withDB :: Serialise a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
 withDB path f = do
@@ -121,8 +122,9 @@ data DB    v (indexes :: [(Symbol, *)]) a = DB (Indexes indexes a) (v a)
 
 newtype CompactedVector a = CompactedVector (Compact (V.Vector a))
 
-(!) :: V.Unbox a => DB CompactedVector indexes a -> Word32 -> Maybe a
-(!) (DB _ (CompactedVector as)) index = getCompact as V.!? fromIntegral index
+(!) :: V.Unbox a => DB CompactedVector indexes a -> ElementOf a -> Maybe a
+(!) (DB _ (CompactedVector as)) (ElementOf index)
+  = getCompact as V.!? fromIntegral index
 
 unindexed :: Indexes '[] a
 unindexed = Indexes ()
@@ -183,16 +185,16 @@ data ScheduledStop = ScheduledStop
   { stopType      :: {-# UNPACK #-} !Word32
   , arrivalTime   :: {-# UNPACK #-} !Word32
   , departureTime :: {-# UNPACK #-} !Word32
-  , atcocode      :: {-# UNPACK #-} !(Key ScheduledStop)
+  , atcocode      :: {-# UNPACK #-} !(ElementOf ScheduledStop)
   } deriving (Show, Generic, Serialise)
 
 derivingUnbox "ScheduledStop"
   [t| ScheduledStop -> (Word32, Word32, Word32, Word32) |]
-  [| \(ScheduledStop a b c (Key d)) -> (a, b, c, d) |]
-  [| \(a, b, c, d) -> (ScheduledStop a b c (Key d)) |]
+  [| \(ScheduledStop a b c (ElementOf d)) -> (a, b, c, d) |]
+  [| \(a, b, c, d) -> (ScheduledStop a b c (ElementOf d)) |]
 
 scheduledStopIndexes
-  = word32Index #atcocodeIndex (getKey . atcocode)
+  = word32Index #atcocodeIndex (getElementOf . atcocode)
     unindexed
 
 writeOut :: IO ()
@@ -208,7 +210,7 @@ writeOut = do
               { stopType = 1
               , arrivalTime = fromIntegral x
               , departureTime = fromIntegral x
-              , atcocode = Key (fromIntegral x)
+              , atcocode = ElementOf (fromIntegral x)
               }
             go (x + 1) write
 
@@ -300,9 +302,9 @@ readOut = do
 
 readTest = do
   db@(DB indexes _) <- readDB "out.bin"
-     $ word32Index #atcocodeIndex (getKey . atcocode)
+     $ word32Index #atcocodeIndex (getElementOf . atcocode)
      $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
        unindexed
-  print $ db ! 1000000
+  print $ db ! (ElementOf 1000000)
   indexes <- lookup indexes #arrDepTimeIndex 2000
   print indexes
