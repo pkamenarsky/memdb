@@ -24,6 +24,8 @@ import Control.Monad.ST
 import Codec.Serialise
 import Codec.Serialise.IO
 
+import qualified Data.Serialize as SZ
+import qualified Data.Serialize.Get as SZ
 import Data.IORef
 import Data.Monoid ((<>))
 
@@ -57,20 +59,22 @@ import Prelude hiding (lookup)
 -- TODO: define in DB.Write, only export Constructor there
 -- don't export constructor in DB.Read
 newtype Offset a = Offset { getOffset :: Word32 }
-  deriving (Show, Generic, Serialise)
+  deriving (Show, Generic, Serialise, SZ.Serialize)
 
 newtype Limit a  = Limit { getLimit :: Word32 }
-  deriving (Show, Generic, Serialise)
+  deriving (Show, Generic, Serialise, SZ.Serialize)
 
-withDB :: Serialise a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
+withDB :: Serialise a => SZ.Serialize a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
 withDB path f = do
   count <- newIORef (0 :: Word32)
   withFile path WriteMode $ \handle -> f $ \a -> do
     modifyIORef count (+1)
-    hPutSerialise handle a
+    -- hPutSerialise handle a
+    B.hPut handle (SZ.encode a)
   withFile (path <> ".meta") WriteMode $ \handle -> do
     count' <- readIORef count
-    hPutSerialise handle count'
+    -- hPutSerialise handle count'
+    B.hPut handle (SZ.encode count')
 
 data Name (a :: Symbol) = Name
 
@@ -194,7 +198,7 @@ data ScheduledStop = ScheduledStop
   , arrivalTime   :: {-# UNPACK #-} !Word32
   , departureTime :: {-# UNPACK #-} !Word32
   , atcocode      :: {-# UNPACK #-} !(Offset ScheduledStop)
-  } deriving (Show, Generic, Serialise)
+  } deriving (Show, Generic, Serialise, SZ.Serialize)
 
 derivingUnbox "ScheduledStop"
   [t| ScheduledStop -> (Word32, Word32, Word32, Word32) |]
@@ -269,6 +273,46 @@ readDB path indexes = do
               eval mm v x y fp "" r
         Fail _ _ e -> print e
 
+readDBSZ
+  :: forall indexes a
+  . SZ.Serialize a
+  => Insert indexes a
+  => Show a
+  => V.Unbox a
+  => FilePath
+  -> Indexes indexes a
+  -> IO (DB CompactedVector indexes a)
+readDBSZ path indexes = do
+  meta <- B.readFile (path <> ".meta")
+  case SZ.decode meta :: Either String Word32 of
+    Left e -> error e
+    Right count -> do
+      mm <- MMW.new
+      v <- V.new (fromIntegral count)
+      fp <- openFile path ReadMode
+      go v fp B.empty 0 (SZ.runGetPartial SZ.get)
+      print "Freezing"
+      v' <- V.unsafeFreeze v
+      print "Compacting"
+      v'' <- compact v'
+      pure $ DB indexes (CompactedVector v'')
+      where
+        go v handle bs (!x) f = do
+          if x `mod` 1000000 == 0
+            then print x
+            else pure ()
+          case f bs of
+            SZ.Fail e _  -> error e
+            SZ.Partial k -> do
+              bs <- B.hGet handle (1024 * 4)
+              if B.null bs
+                then pure ()
+                else go v handle bs x f
+            SZ.Done a bs -> do
+              V.write v x a
+              insertIndex indexes (fromIntegral x) a
+              go v handle bs (x + 1) (SZ.runGetPartial SZ.get)
+
 readOut :: IO ()
 readOut = do
   mm <- MMW.new
@@ -309,10 +353,10 @@ readOut = do
         Fail _ _ e -> print e
 
 readTest = do
-  db@(DB indexes _) <- readDB "out.bin"
+  db@(DB indexes _) <- readDBSZ "out.bin"
      $ word32Index #atcocodeIndex (getOffset . atcocode)
-     $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
+     -- $ word32Index #arrDepTimeIndex (\s -> arrivalTime s + departureTime s)
        unindexed
   print $ db ! (Offset 1000000)
-  indexes <- lookup indexes #arrDepTimeIndex 2000
+  indexes <- lookup indexes #atcocodeIndex 2000
   print indexes
