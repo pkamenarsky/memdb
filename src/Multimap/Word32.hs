@@ -2,6 +2,7 @@ module Multimap.Word32
   ( new
   , insert
   , lookup
+  , Multimap
   ) where
 
 import           Data.Word

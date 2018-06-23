@@ -2,6 +2,7 @@ module Multimap.ByteString
   ( new
   , insert
   , lookup
+  , Multimap
   ) where
 
 import qualified Data.ByteString as B

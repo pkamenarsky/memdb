@@ -16,4 +16,4 @@ testmmap = do
 
 main :: IO ()
 main = do
-  readOut
+  writeOut
