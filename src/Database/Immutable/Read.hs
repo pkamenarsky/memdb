@@ -141,7 +141,7 @@ readDB path progress indexes = do
                 bs <- B.hGet handle (1024 * 4)
                 if B.null bs
                   then pure $ Right ()
-                  else go count v handle bs x f
+                  else go count v handle bs x k
               S.Done a bs -> do
                 GVM.write v (fromIntegral x) a
                 I.insertIndex indexes (fromIntegral x) a
