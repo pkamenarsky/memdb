@@ -53,14 +53,6 @@ import GHC.Generics
 
 import Prelude hiding (lookup)
 
--- TODO: define in DB.Write, only export Constructor there
--- don't export constructor in DB.Read
-newtype Offset a = Offset { getOffset :: Word32 }
-  deriving (Show, Generic, S.Serialize)
-
-newtype Limit a  = Limit { getLimit :: Word32 }
-  deriving (Show, Generic, S.Serialize)
-
 withDB :: S.Serialize a => FilePath -> ((a -> IO ()) -> IO ()) -> IO ()
 withDB path f = do
   count <- newIORef (0 :: Word32)
@@ -71,59 +63,7 @@ withDB path f = do
     count' <- readIORef count
     B.hPut handle (S.encode count')
 
-data Name (a :: Symbol) = Name
-
-instance l ~ l' => IsLabel (l :: Symbol) (Name l') where
-  fromLabel = Name
-
-data ByteStringIndex a = ByteStringIndex
-data Word32Index     a = Word32Index
-
-type family MapIndexes (indexes :: [(Symbol, *)]) a :: * where
-  MapIndexes '[] a = ()
-  MapIndexes ('(s, ByteStringIndex a):xs) a = ( MMB.Multimap
-                                              , a -> B.ByteString
-                                              , MapIndexes xs a
-                                              )
-  MapIndexes ('(s, Word32Index a):xs)     a = ( MMW.Multimap
-                                              , a -> Word32
-                                              , MapIndexes xs a
-                                              )
-
-class Lookup indexes (s :: Symbol) t a | indexes s a -> t where
-  lookup :: Indexes indexes a -> Name s -> t -> IO [Word32]
-
-instance Lookup ('(s, ByteStringIndex a):xs) s B.ByteString a where
-  lookup (Indexes (mm, _, _)) _ = MMB.lookup mm
-
-instance Lookup ('(s, Word32Index a):xs) s Word32 a where
-  lookup (Indexes (mm, _, _)) _ = MMW.lookup mm
-
-instance {-# OVERLAPPABLE #-}
-  ( MapIndexes (x:xs) a ~ (y, f, MapIndexes xs a)
-  , Lookup xs s t a
-  ) => Lookup (x:xs) s t a where
-    lookup (Indexes (_, _, xs)) = lookup (Indexes xs :: Indexes xs a)
-
-class Insert indexes a where
-  insertIndex :: Indexes indexes a -> Word32 -> a -> IO ()
-
-instance Insert '[] a where
-  insertIndex _ _ _ = pure ()
-
-instance Insert xs a => Insert ('(s, Word32Index a):xs) a where
-  insertIndex (Indexes (mm, f, xs)) index a = do
-    MMW.insert mm (f a) index
-    insertIndex (Indexes xs :: Indexes xs a) index a
-
-instance Insert xs a => Insert ('(s, ByteStringIndex a):xs) a where
-  insertIndex (Indexes (mm, f, xs)) index a = do
-    MMB.insert mm (f a) index
-    insertIndex (Indexes xs :: Indexes xs a) index a
-
-data Indexes (indexes :: [(Symbol, *)]) a = Indexes (MapIndexes indexes a)
-data DB    v (indexes :: [(Symbol, *)]) a = DB (Indexes indexes a) (v a)
-
+{-
 newtype CompactedVector a = CompactedVector (Compact (V.Vector a))
 
 (!) :: V.Unbox a => DB CompactedVector indexes a -> Offset a -> Maybe a
@@ -132,31 +72,6 @@ newtype CompactedVector a = CompactedVector (Compact (V.Vector a))
 
 slice :: V.Unbox a => DB CompactedVector indexes a -> Offset a -> Limit a -> [a]
 slice = undefined
-
-unindexed :: Indexes '[] a
-unindexed = Indexes ()
-
-word32Index
-  :: KnownSymbol s
-  => Name s
-  -> (a -> Word32)
-  -> Indexes indexes a
-  -> Indexes ('(s, Word32Index a):indexes) a
-word32Index _ f (Indexes indexes) = unsafePerformIO $ do
-  mm <- MMW.new
-  pure $ Indexes (mm, f, indexes)
-{-# NOINLINE word32Index #-}
-
-byteStringIndex
-  :: KnownSymbol s
-  => Name s
-  -> (a -> B.ByteString)
-  -> Indexes indexes a
-  -> Indexes ('(s, ByteStringIndex a):indexes) a
-byteStringIndex _ f (Indexes indexes) = unsafePerformIO $ do
-  mm <- MMB.new
-  pure $ Indexes (mm, f, indexes)
-{-# NOINLINE byteStringIndex #-}
 
 --------------------------------------------------------------------------------
 
@@ -270,3 +185,4 @@ readTest = do
   print $ db ! (Offset 1000000)
   indexes <- lookup indexes #arrDepTimeIndex 2000
   print indexes
+-}
