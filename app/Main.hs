@@ -3,7 +3,6 @@
 module Main where
 
 import qualified Multimap.ByteString as MM
-import           Lib
 
 testmmap :: IO ()
 testmmap = do

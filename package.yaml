@@ -1,10 +1,10 @@
 name:                memdb
-version:             0.1.0.0
-github:              "githubuser/memdb"
+version:             1.0.0.0
+github:              "pkamenarsky/memdb"
 license:             BSD3
-author:              "Author name here"
-maintainer:          "example@example.com"
-copyright:           "2018 Author name here"
+author:              "Philip Kamenarsky"
+maintainer:          "p.kamenarsky@gmail.com"
+copyright:           "2018 Philip Kamenarsky"
 
 extra-source-files:
 - README.md
@@ -12,13 +12,13 @@ extra-source-files:
 - cbits/Multimap.cpp
 
 # Metadata used when publishing your package
-# synopsis:            Short description of your package
-# category:            Web
+synopsis:            Efficient in memory indexed database
+category:            Database
 
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/githubuser/memdb#readme>
+description:         Please see the README on GitHub at <https://github.com/pkamenarsky/memdb#readme>
 
 dependencies:
 - base >= 4.7 && < 5
@@ -34,6 +34,13 @@ library:
   cc-options: -O2
   extra-libraries: stdc++
   source-dirs: src
+  exposed-modules:
+  - Database.Immutable
+  - Database.Immutable.Read
+  - Database.Immutable.Read.Unboxed
+  - Database.Immutable.Write
+  - Multimap.ByteString
+  - Multimap.Word32
 
 executables:
   memdb-exe:
