@@ -29,7 +29,7 @@ dependencies:
 
 library:
   c-sources: cbits/Multimap.cpp
-  cc-options: -O2
+  cc-options: -O2 -std=c++11
   extra-libraries: stdc++
   source-dirs: src
   exposed-modules:
