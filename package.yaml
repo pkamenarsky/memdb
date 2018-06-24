@@ -1,7 +1,7 @@
 name:                memdb
 version:             1.0.0.0
 github:              "pkamenarsky/memdb"
-license:             BSD3
+license:             MIT
 author:              "Philip Kamenarsky"
 maintainer:          "p.kamenarsky@gmail.com"
 copyright:           "2018 Philip Kamenarsky"

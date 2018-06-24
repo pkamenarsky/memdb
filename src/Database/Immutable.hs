@@ -1,7 +1,7 @@
 {-|
 Module      : Database.Immutable
 Copyright   : (c) Philip Kamenarsky, 2018
-License     : BSD
+License     : MIT
 Maintainer  : p.kamenarsky@gmail.com
 Stability   : experimental
 Portability : POSIX
