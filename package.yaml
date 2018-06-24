@@ -24,10 +24,8 @@ dependencies:
 - base >= 4.7 && < 5
 - bytestring
 - cereal
-- mmap
 - vector
 - ghc-compact
-- vector-th-unbox
 
 library:
   c-sources: cbits/Multimap.cpp
