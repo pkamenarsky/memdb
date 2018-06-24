@@ -1,6 +1,5 @@
 {-|
 Module      : Database.Immutable
-Description : Efficient in memory indexed database
 Copyright   : (c) Philip Kamenarsky, 2018
 License     : BSD
 Maintainer  : p.kamenarsky@gmail.com
