@@ -42,18 +42,6 @@ library:
   - Multimap.ByteString
   - Multimap.Word32
 
-executables:
-  memdb-exe:
-    main:                Main.hs
-    source-dirs:         app
-    ghc-options:
-    - -O2
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - memdb
-
 tests:
   memdb-test:
     main:                Spec.hs
