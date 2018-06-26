@@ -25,17 +25,17 @@ dependencies:
 - bytestring
 - cereal
 - vector
-- ghc-compact
 
 library:
   c-sources: cbits/Multimap.cpp
   cc-options: -O2 -std=c++11
+  ghc-options:
+  - -Wall
   extra-libraries: stdc++
   source-dirs: src
   exposed-modules:
   - Database.Immutable
   - Database.Immutable.Read
-  - Database.Immutable.Read.Unboxed
   - Database.Immutable.Write
   - Multimap.ByteString
   - Multimap.Word32
@@ -45,8 +45,12 @@ tests:
     main:                Spec.hs
     source-dirs:         test
     ghc-options:
+    - -O2
+    - -Wall
+    - -fno-warn-partial-type-signatures
     - -threaded
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
     - memdb
+    - QuickCheck

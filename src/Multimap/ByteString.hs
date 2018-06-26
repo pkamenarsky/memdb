@@ -14,7 +14,7 @@ import           Foreign.Ptr
 import           Foreign.C.String
 import           Foreign.Storable
 
-import           Prelude hiding (lookup)
+import           Prelude hiding (length, lookup)
 
 data    CMultimap
 newtype Multimap = Multimap (ForeignPtr CMultimap)
@@ -26,10 +26,12 @@ foreign import ccall unsafe "insert_mmap_str"  insert_mmap
   :: Ptr CMultimap
   -> CString
   -> Word32
+  -> Word32
   -> IO ()
 foreign import ccall unsafe "lookup_mmap_str"  lookup_mmap
   :: Ptr CMultimap
   -> CString
+  -> Word32
   -> IO (Ptr Word32)
 foreign import ccall unsafe "free_result"      free_result
   :: Ptr Word32
@@ -42,11 +44,11 @@ new = do
 
 insert :: Multimap -> B.ByteString -> Word32 -> IO ()
 insert (Multimap mm) k v = withForeignPtr mm $ \mm' ->
-  B.useAsCString k $ \k' -> insert_mmap mm' k' v
+  B.useAsCStringLen k $ \(k', l) -> insert_mmap mm' k' (fromIntegral l) v
 
 lookup :: Multimap -> B.ByteString -> IO [Word32]
 lookup (Multimap mm) k = withForeignPtr mm $ \mm' -> do
-  result <- B.useAsCString k $ \k' -> lookup_mmap mm' k'
+  result <- B.useAsCStringLen k $ \(k', l) -> lookup_mmap mm' k' (fromIntegral l)
   length <- peek result
   array  <- peekArray (fromIntegral length) result
 

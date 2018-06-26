@@ -15,21 +15,21 @@ module Database.Immutable.Internal where
 import qualified Data.ByteString as B
 import qualified Data.Serialize as S
 import           Data.Word
+import qualified Data.Vector.Storable as V
 
 import qualified Multimap.ByteString as MMB
 import qualified Multimap.Word32 as MMW
 
-import           GHC.Compact
 import           GHC.Generics
 import           GHC.OverloadedLabels
 import           GHC.TypeLits
 
 -- | Offset into the database.
-newtype Offset a = Offset { getOffset :: Word32 }
+newtype Offset a = Offset { getOffset :: Int }
   deriving (Show, Generic, S.Serialize)
 
 -- | Limit the number of elements read after an 'Offset'.
-newtype Limit a  = Limit { getLimit :: Word32 }
+newtype Limit a  = Limit { getLimit :: Int }
   deriving (Show, Generic, S.Serialize)
 
 -- | Type tying a typelevel 'Symbol' to a value.
@@ -43,14 +43,12 @@ instance l ~ l' => IsLabel (l :: Symbol) (Name l') where
   fromLabel = Name
 
 -- | An immutable database containing elements of type @a@, each one
--- indexed according to an 'Indexes' description, stored in a generic
--- @vector@ type.
+-- indexed according to an 'Indexes' description.
 --
 -- Import "Database.Immutable.Read" for reading boxed values and
 -- "Database.Immutable.Read.Unboxed" for the unboxed variant.
-data DB vector (indexes :: [(Symbol, *)]) a
-  = DB (Indexes indexes a) (Compact (vector a))
-
+data DB (indexes :: [(Symbol, *)]) a
+  = DB (Indexes indexes a) B.ByteString (V.Vector Word32)
 
 -- | 'Indexes' description. Currently, there are two supported index types:
 -- 'Word32' and 'B.ByteString'. Both can be specified using the

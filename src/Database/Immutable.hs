@@ -6,8 +6,8 @@ Maintainer  : p.kamenarsky@gmail.com
 Stability   : experimental
 Portability : POSIX
 
-This package contains a thin wrapper over 'Data.Vector' combined with an
-efficient reverse index implementation for fast and type-safe indexed
+This package contains a thin wrapper over a continous memory region combined
+with an efficient reverse index implementation for fast and type-safe indexed
 lookups.
 
 It is aimed at storing, loading and querying big immutable datasets. Once
@@ -32,37 +32,53 @@ module Database.Immutable
   -- * Querying
   , (!)
   , slice
-  , slice'
   , lookup
   ) where
 
-import qualified Data.Vector.Generic as GV
+import qualified Data.ByteString as B
+import           Data.Either (either)
+import qualified Data.Vector.Storable as V
+import qualified Data.Serialize as S
 
 import           Database.Immutable.Internal
 
-import           GHC.Compact
-import           GHC.TypeLits
-
 import           System.IO.Unsafe (unsafePerformIO)
 
-import           Prelude hiding (lookup)
+import           Prelude hiding (length, lookup)
 
 -- | /O(1)/ Yield the database element at the specified position.
-(!) :: GV.Vector vector a => DB vector indexes a -> Offset a -> Maybe a
-(!) (DB _ as) (Offset index) = getCompact as GV.!? fromIntegral index
+(!) :: S.Serialize a => DB indexes a -> Offset a -> Maybe a
+(!) (DB _ contents offsets) (Offset index)
+  | Just length' <- length
+  , Just offset' <- offset = either (const Nothing) Just $ S.decode
+      $ B.take (fromIntegral length')
+      $ B.drop (fromIntegral offset') contents
+  | otherwise = Nothing 
+  where
+    length = offsets V.!? index
+    offset
+      | index == 0 = Just 0
+      | otherwise = offsets V.!? (index - 1)
 
--- | /O(1)/ Yield a slice of the underlying vector holding the database
--- elements, without copying it. The database must contain at least
--- i+n elements.
-slice' :: GV.Vector vector a => DB vector indexes a -> Offset a -> Limit a -> vector a
-slice' (DB _ as) (Offset index) (Limit limit)
-  = GV.slice (fromIntegral index) (fromIntegral limit) (getCompact as)
+unsafeIndex :: S.Serialize a => DB indexes a -> Offset a -> a
+unsafeIndex (DB _ contents offsets) (Offset index)
+  = either (error "unsafeIndex") id $ S.decode
+      $ B.take (fromIntegral length)
+      $ B.drop (fromIntegral offset) contents
+  where
+    length = offsets V.! index
+    offset
+      | index == 0 = 0
+      | otherwise = offsets V.! (index - 1)
 
 -- | /O(n)/ Yield a slice of the database. The database must contain
 -- at least i+n elements.
-slice :: GV.Vector vector a => DB vector indexes a -> Offset a -> Limit a -> [a]
-slice (DB _ as) (Offset index) (Limit limit) = GV.toList
-  $ GV.slice (fromIntegral index) (fromIntegral limit) (getCompact as)
+slice :: S.Serialize a => DB indexes a -> Offset a -> Limit a -> [a]
+slice db@(DB _ _ offsets) (Offset index) (Limit limit)
+  | limit <= 0 = []
+  | otherwise = map
+      ((db `unsafeIndex`) . Offset)
+      [max 0 index..min (V.length offsets - 1) (index + limit - 1)]
 
 -- | /O(n)/ Lookup by index, @n@ being the count of returned elements.
 --
@@ -70,13 +86,13 @@ slice (DB _ as) (Offset index) (Limit limit) = GV.toList
 --
 -- > lookup personsDB #nameIndex "Phil" -- Return all elements named "Phil"
 lookup
-  :: GV.Vector vector a
+  :: S.Serialize a
   => LookupIndex indexes s v a
-  => DB vector indexes a       -- ^ Database
-  -> Name s                    -- ^ Index name
-  -> v                         -- ^ Index value
-  -> [a]                       -- ^ Resulting items
-lookup (DB indexes as) name t = map (as' GV.!) (map fromIntegral is)
+  => DB indexes a       -- ^ Database
+  -> Name s             -- ^ Index name
+  -> v                  -- ^ Index value
+  -> [a]                -- ^ Resulting items
+lookup db@(DB indexes _ _) name t
+  = map ((db `unsafeIndex`) . Offset . fromIntegral) is
   where
-    as' = getCompact as
-    is  = unsafePerformIO $ lookupIndex indexes name t
+    is = unsafePerformIO $ lookupIndex indexes name t

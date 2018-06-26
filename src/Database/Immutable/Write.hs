@@ -6,6 +6,7 @@ module Database.Immutable.Write
 
   -- * Writing
   , writeDB
+  , fromList
   ) where
 
 import qualified Data.ByteString as B
@@ -17,6 +18,14 @@ import           Data.Word
 import qualified Database.Immutable.Internal as I
 
 import           System.IO
+
+-- | Creata a database from a list. Databases can be created
+-- back using 'Database.Immutable.Read.createDB'.
+fromList
+  :: S.Serialize a
+  => [a] -- ^ Writing function; the continuation can be called multiple times
+  -> B.ByteString
+fromList = foldr B.append B.empty . (map S.encode)
 
 -- | Write data sequentially to a database file. Database files can be read
 -- back using 'Database.Immutable.Read.readDB'.

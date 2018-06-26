@@ -10,10 +10,9 @@ import           Data.Word
 import           Foreign.ForeignPtr
 import           Foreign.Marshal.Array
 import           Foreign.Ptr
-import           Foreign.C.String
 import           Foreign.Storable
 
-import           Prelude hiding (lookup)
+import           Prelude hiding (length, lookup)
 
 data    CMultimap
 newtype Multimap = Multimap (ForeignPtr CMultimap)
