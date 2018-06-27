@@ -92,7 +92,7 @@ createDB
   => B.ByteString
   -- ^ Serialised elements
 
-  -> Word32
+  -> Int
   -- ^ Element count
   
   -> (Maybe (Int -> Int -> IO ()))
@@ -157,6 +157,6 @@ readDB path progress indexes = do
 
   case S.decode meta of
     Left e -> pure $ Left e
-    Right count -> do
+    Right (count :: Word32) -> do
       contents <- B.readFile path
-      createDB contents count progress indexes
+      createDB contents (fromIntegral count) progress indexes
