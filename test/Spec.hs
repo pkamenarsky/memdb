@@ -16,20 +16,34 @@ import           Test.Hspec
 
 main :: IO ()
 main = hspec $ do
-  describe "Indexing" $
+  describe "Indexing" $ do
     it "works correctly"
-      $ QC.quickCheck
-      $ QC.withMaxSuccess 5000 indexProp
+      $ QC.withMaxSuccess 3000
+      $ QC.property indexProp
 
-  describe "Word32 lookup" $
-    it "works correctly"
-      $ QC.quickCheck
-      $ QC.withMaxSuccess 5000 lookupPropWord32
+  describe "Word32 lookup" $ do
+    it "works correctly with a random list"
+      $ QC.withMaxSuccess 3000
+      $ QC.property lookupPropWord32
 
-  describe "ByteString lookup" $
-    it "works correctly"
-      $ QC.quickCheck
-      $ QC.withMaxSuccess 5000 lookupPropByteString
+    it "works correctly with a random list with duplicated elements"
+      $ QC.withMaxSuccess 3000
+      $ QC.property
+      $ flip QC.forAll lookupPropWord32 $ do
+          elements <- QC.vectorOf 5 QC.arbitrary
+          QC.listOf (QC.elements elements)
+
+  describe "ByteString lookup" $ do
+    it "works correctly with a random list"
+      $ QC.withMaxSuccess 3000
+      $ QC.property lookupPropByteString
+
+    it "works correctly with a random list with duplicated elements"
+      $ QC.withMaxSuccess 3000
+      $ QC.property
+      $ flip QC.forAll lookupPropByteString $ do
+          elements <- QC.vectorOf 5 QC.arbitrary
+          QC.listOf (QC.elements elements)
 
 safeIndex :: Int -> [a] -> Maybe a
 safeIndex index as
