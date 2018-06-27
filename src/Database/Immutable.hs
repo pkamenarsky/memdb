@@ -13,8 +13,7 @@ lookups.
 It is aimed at storing, loading and querying big immutable datasets. Once
 written, a database can not be modified further.
 
-Since databases are immutable, once loaded the underlying vectors are
-frozen, fully evaluated and compacted. Compaction ensures efficient garbage
+The underlying storage is pinned and thus ensures efficient garbage
 collection without ever reading the structure contents, since no pointers
 live inside the dataset that point outside it.
 
