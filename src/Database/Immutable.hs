@@ -86,7 +86,8 @@ slice db@(DB _ _ offsets) (Offset index) (Limit limit)
 --
 -- > lookup personsDB #nameIndex "Phil" -- Return all elements named "Phil"
 lookup
-  :: S.Serialize a
+  :: forall indexes s v a
+  . S.Serialize a
   => LookupIndex indexes s v a
   => DB indexes a       -- ^ Database
   -> Name s             -- ^ Index name
@@ -95,4 +96,5 @@ lookup
 lookup db@(DB indexes _ _) name t
   = map ((db `unsafeIndex`) . Offset . fromIntegral) is
   where
-    is = unsafePerformIO $ lookupIndex indexes name t
+    is = unsafePerformIO
+       $ lookupIndex (Indexes' indexes :: Indexes' indexes a) name t

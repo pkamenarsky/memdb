@@ -48,7 +48,7 @@ instance l ~ l' => IsLabel (l :: Symbol) (Name l') where
 -- Import "Database.Immutable.Read" for reading boxed values and
 -- "Database.Immutable.Read.Unboxed" for the unboxed variant.
 data DB (indexes :: [(Symbol, *)]) a
-  = DB (Indexes indexes a) B.ByteString (V.Vector Word32)
+  = DB (MapIndexes indexes a) B.ByteString (V.Vector Word32)
 
 -- | 'Indexes' description. Currently, there are two supported index types:
 -- 'Word32' and 'B.ByteString'. Both can be specified using the
@@ -79,7 +79,8 @@ data DB (indexes :: [(Symbol, *)]) a
 --       (\\p -> 'BC.pack' (name p '<>' 'show' (age p + 1)))
 --     'unindexed'
 -- @
-data Indexes   (indexes :: [(Symbol, *)]) a = Indexes (MapIndexes indexes a)
+data Indexes  (indexes :: [(Symbol, *)]) a = Indexes (IO (MapIndexes indexes a))
+data Indexes' (indexes :: [(Symbol, *)]) a = Indexes' (MapIndexes indexes a)
 
 --------------------------------------------------------------------------------
 
@@ -98,33 +99,33 @@ type family MapIndexes (indexes :: [(Symbol, *)]) a :: * where
                                               )
 
 class LookupIndex indexes (s :: Symbol) t a | indexes s a -> t where
-  lookupIndex :: Indexes indexes a -> Name s -> t -> IO [Word32]
+  lookupIndex :: Indexes' indexes a -> Name s -> t -> IO [Word32]
 
 instance LookupIndex ('(s, ByteStringIndex a):xs) s B.ByteString a where
-  lookupIndex (Indexes (mm, _, _)) _ = MMB.lookup mm
+  lookupIndex (Indexes' (mm, _, _)) _ = MMB.lookup mm
 
 instance LookupIndex ('(s, Word32Index a):xs) s Word32 a where
-  lookupIndex (Indexes (mm, _, _)) _ = MMW.lookup mm
+  lookupIndex (Indexes' (mm, _, _)) _ = MMW.lookup mm
 
 instance {-# OVERLAPPABLE #-}
   ( MapIndexes (x:xs) a ~ (y, f, MapIndexes xs a)
   , LookupIndex xs s t a
   ) => LookupIndex (x:xs) s t a where
-    lookupIndex (Indexes (_, _, xs))
-      = lookupIndex (Indexes xs :: Indexes xs a)
+    lookupIndex (Indexes' (_, _, xs))
+      = lookupIndex (Indexes' xs :: Indexes' xs a)
 
 class InsertIndex indexes a where
-  insertIndex :: Indexes indexes a -> Word32 -> a -> IO ()
+  insertIndex :: Indexes' indexes a -> Word32 -> a -> IO ()
 
 instance InsertIndex '[] a where
   insertIndex _ _ _ = pure ()
 
 instance InsertIndex xs a => InsertIndex ('(s, Word32Index a):xs) a where
-  insertIndex (Indexes (mm, f, xs)) index a = do
+  insertIndex (Indexes' (mm, f, xs)) index a = do
     MMW.insert mm (f a) index
-    insertIndex (Indexes xs :: Indexes xs a) index a
+    insertIndex (Indexes' xs :: Indexes' xs a) index a
 
 instance InsertIndex xs a => InsertIndex ('(s, ByteStringIndex a):xs) a where
-  insertIndex (Indexes (mm, f, xs)) index a = do
+  insertIndex (Indexes' (mm, f, xs)) index a = do
     MMB.insert mm (f a) index
-    insertIndex (Indexes xs :: Indexes xs a) index a
+    insertIndex (Indexes' xs :: Indexes' xs a) index a

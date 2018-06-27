@@ -36,8 +36,8 @@ import           GHC.TypeLits
 import qualified Database.Immutable.Internal as I
 
 -- | Default 'I.Indexes' description, specifying an unindexed database.
-unindexed :: IO (I.Indexes '[] a)
-unindexed = pure $ I.Indexes ()
+unindexed :: I.Indexes '[] a
+unindexed = I.Indexes (pure ())
 
 -- | Add a 'Word32' index to an 'I.Indexes' description to be built when
 -- reading a database.
@@ -50,15 +50,15 @@ word32Index
   -> (a -> Word32)
   -- ^ Index computing function
 
-  -> IO (I.Indexes indexes a)
+  -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
-  -> IO (I.Indexes ('(s, I.Word32Index a):indexes) a)
+  -> I.Indexes ('(s, I.Word32Index a):indexes) a
   -- ^ Resulting 'I.Indexes' desctiption, inlcuding the new 'Word32' index
-word32Index _ f indexes' = do
-  I.Indexes indexes <- indexes'
+word32Index _ f (I.Indexes indexes') = I.Indexes $ do
+  indexes <- indexes'
   mm <- MMW.new
-  pure $ I.Indexes (mm, f, indexes)
+  pure (mm, f, indexes)
 
 -- | Add a 'B.ByteString' index to an 'I.Indexes' description to be built when
 -- reading a database.
@@ -71,16 +71,16 @@ byteStringIndex
   -> (a -> B.ByteString)
   -- ^ Index computing function
 
-  -> IO (I.Indexes indexes a)
+  -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
-  -> IO (I.Indexes ('(s, I.ByteStringIndex a):indexes) a)
+  -> I.Indexes ('(s, I.ByteStringIndex a):indexes) a
   -- ^ Resulting 'I.Indexes' desctiption, inlcuding the new 'B.ByteString'
   -- index
-byteStringIndex _ f indexes'  = do
-  I.Indexes indexes <- indexes'
+byteStringIndex _ f (I.Indexes indexes') = I.Indexes $ do
+  indexes <- indexes'
   mm <- MMB.new
-  pure $ I.Indexes (mm, f, indexes)
+  pure (mm, f, indexes)
 
 -- | Create a database from a 'B.ByteString' and build up
 -- in-memory indexes according to the 'I.Indexes' description.
@@ -99,12 +99,12 @@ createDB
   -- ^ Progress indicating function, called with the number of elements
   -- currently read and the total count of elements
 
-  -> IO (I.Indexes indexes a)
+  -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
   -> IO (Either String (I.DB indexes a))
   -- ^ Resulting database or a parse/deserializiation error
-createDB contents count progress indexes' = do
+createDB contents count progress (I.Indexes indexes') = do
   indexes <- indexes'
   offsets <- VSM.new count
 
@@ -115,7 +115,10 @@ createDB contents count progress indexes' = do
             S.Partial _  -> pure $ Left "Unexpected Partial"
             S.Done a bs' -> do
               VSM.write offsets x (fromIntegral (B.length contents - B.length bs'))
-              I.insertIndex indexes (fromIntegral x) a
+              I.insertIndex
+                (I.Indexes' indexes :: I.Indexes' indexes a)
+                (fromIntegral x)
+                a
 
               maybe (pure ()) (\f' -> f' x count) progress
 
@@ -144,7 +147,7 @@ readDB
   -- ^ Progress indicating function, called with the number of elements
   -- currently read and the total count of elements
 
-  -> IO (I.Indexes indexes a)
+  -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
   -> IO (Either String (I.DB indexes a))
