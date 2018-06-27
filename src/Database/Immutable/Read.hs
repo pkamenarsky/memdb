@@ -92,7 +92,7 @@ createDB
   => B.ByteString
   -- ^ Serialised elements
 
-  -> Int
+  -> Word32
   -- ^ Element count
   
   -> (Maybe (Int -> Int -> IO ()))
@@ -106,7 +106,7 @@ createDB
   -- ^ Resulting database or a parse/deserializiation error
 createDB contents count progress (I.Indexes indexes') = do
   indexes <- indexes'
-  offsets <- VSM.new count
+  offsets <- VSM.new (fromIntegral count)
 
   let go bs (!x) f
         | not (B.null bs) = do
@@ -120,7 +120,7 @@ createDB contents count progress (I.Indexes indexes') = do
                 (fromIntegral x)
                 a
 
-              maybe (pure ()) (\f' -> f' x count) progress
+              maybe (pure ()) (\f' -> f' x (fromIntegral count)) progress
 
               go bs' (x + 1) (S.runGetPartial S.get)
         | otherwise = pure $ Right ()
