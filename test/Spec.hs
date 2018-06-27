@@ -12,11 +12,24 @@ import qualified Database.Immutable.Write as DB
 import qualified Test.QuickCheck as QC
 import qualified Test.QuickCheck.Monadic as QC
 
+import           Test.Hspec
+
 main :: IO ()
-main = do
-  QC.quickCheck $ QC.withMaxSuccess 1000 indexProp
-  QC.quickCheck $ QC.withMaxSuccess 1000 lookupPropWord32
-  QC.quickCheck $ QC.withMaxSuccess 1000 lookupPropString
+main = hspec $ do
+  describe "Indexing" $
+    it "works correctly"
+      $ QC.quickCheck
+      $ QC.withMaxSuccess 5000 indexProp
+
+  describe "Word32 lookup" $
+    it "works correctly"
+      $ QC.quickCheck
+      $ QC.withMaxSuccess 5000 lookupPropWord32
+
+  describe "ByteString lookup" $
+    it "works correctly"
+      $ QC.quickCheck
+      $ QC.withMaxSuccess 5000 lookupPropByteString
 
 safeIndex :: Int -> [a] -> Maybe a
 safeIndex index as
@@ -35,24 +48,6 @@ indexProp elements = QC.monadicIO $ do
         :: _ (Either String (DB.DB _ Int))
   forM_ [-10..length elements + 10] $ \index -> do
     QC.assert (safeIndex index elements == db DB.! DB.Offset index)
-  where
-    binary = DB.fromList elements
-
-lookupPropWord32' :: [Int] -> IO Bool
-lookupPropWord32' elements = do
-  Right db <- DB.createDB
-        binary
-        (length elements)
-        Nothing
-        $ DB.word32Index #index fromIntegral 
-          DB.unindexed
-        :: _ (Either String (DB.DB _ Int))
-
-  fmap and $ forM elements $ \element -> do
-    let actual   = DB.lookup db #index (fromIntegral element)
-        expected = filter (== element) elements
-    pure (actual == expected)
-
   where
     binary = DB.fromList elements
 
@@ -75,8 +70,8 @@ lookupPropWord32 elements = QC.monadicIO $ do
   where
     binary = DB.fromList elements
 
-lookupPropString :: [String] -> QC.Property
-lookupPropString elements = QC.monadicIO $ do
+lookupPropByteString :: [String] -> QC.Property
+lookupPropByteString elements = QC.monadicIO $ do
   Right db <- QC.run
     $ DB.createDB
         binary
@@ -88,8 +83,8 @@ lookupPropString elements = QC.monadicIO $ do
 
   forM_ elements $ \element -> do
     let actual   = DB.lookup db #index (BC.pack element)
-        expected = filter (== element) elements
-    QC.assert (actual == expected)
+        expected = filter (== BC.pack element) (map BC.pack elements)
+    QC.assert (map BC.pack actual == expected)
 
   where
     binary = DB.fromList elements
