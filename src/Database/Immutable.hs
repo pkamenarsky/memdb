@@ -73,11 +73,11 @@ unsafeIndex (DB _ contents offsets) (Offset index)
 -- | /O(n)/ Yield a slice of the database. The database must contain
 -- at least i+n elements.
 slice :: S.Serialize a => DB indexes a -> Offset a -> Limit a -> [a]
-slice db@(DB _ _ offsets) (Offset index) (Limit limit)
-  | limit <= 0 = []
-  | otherwise = map
-      ((db `unsafeIndex`) . Offset)
-      [max 0 index..min (V.length offsets - 1) (index + limit - 1)]
+slice db@(DB _ _ offsets) (Offset index) (Limit limit) = map
+  ((db `unsafeIndex`) . Offset)
+  [index'..max index' (min (V.length offsets) (index' + limit)) - 1]
+  where
+    index' = max index 0
 
 -- | /O(n)/ Lookup by index, @n@ being the count of returned elements.
 --

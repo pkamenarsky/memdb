@@ -21,6 +21,11 @@ main = hspec $ do
       $ QC.withMaxSuccess 3000
       $ QC.property indexProp
 
+  describe "Slicing" $ do
+    it "works correctly"
+      $ QC.withMaxSuccess 1000
+      $ QC.property sliceProp
+
   describe "Word32 lookup" $ do
     it "works correctly with a random list"
       $ QC.withMaxSuccess 3000
@@ -51,6 +56,12 @@ safeIndex index as
   | index >= length as = Nothing
   | otherwise         = Just (as !! index)
 
+safeSlice :: Int -> Int -> [a] -> [a]
+safeSlice offset limit as = take limit' $ drop offset' as
+  where
+    offset' = max 0 offset
+    limit'  = max 0 (min (length as) (offset' + limit) - offset')
+
 indexProp :: [Int] -> QC.Property
 indexProp elements = QC.monadicIO $ do
   Right db <- QC.run
@@ -62,6 +73,23 @@ indexProp elements = QC.monadicIO $ do
         :: _ (Either String (DB.DB _ Int))
   forM_ [-10..length elements + 10] $ \index -> do
     QC.assert (safeIndex index elements == db DB.! DB.Offset index)
+  where
+    binary = DB.fromList elements
+
+sliceProp :: [Int] -> QC.Property
+sliceProp elements = QC.monadicIO $ do
+  Right db <- QC.run
+    $ DB.createDB
+        binary
+        (length elements)
+        Nothing
+        DB.unindexed
+        :: _ (Either String (DB.DB _ Int))
+  forM_ [-10..length elements + 10] $ \index -> do
+    forM_ [-10..length elements + 10] $ \limit -> do
+      let actual   = DB.slice db (DB.Offset index) (DB.Limit limit)
+          expected = safeSlice index limit elements
+      QC.assert (actual == expected)
   where
     binary = DB.fromList elements
 
