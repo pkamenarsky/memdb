@@ -19,8 +19,6 @@ module Database.Immutable.Read
   , word32Index
   ) where
 
-import           Control.Monad.IO.Class (MonadIO, liftIO)
-
 import qualified Data.ByteString as B
 import           Data.Maybe (maybe)
 import           Data.Monoid ((<>))
@@ -87,9 +85,8 @@ byteStringIndex _ f (I.Indexes indexes') = I.Indexes $ do
 -- | Create a database from a 'B.ByteString' and build up
 -- in-memory indexes according to the 'I.Indexes' description.
 createDB
-  :: forall indexes m a
-  . MonadIO m
-  => S.Serialize a
+  :: forall indexes a
+  . S.Serialize a
   => I.InsertIndex indexes a
 
   => B.ByteString
@@ -98,18 +95,18 @@ createDB
   -> Int
   -- ^ Element count
   
-  -> (Maybe (Int -> Int -> m ()))
+  -> (Maybe (Int -> Int -> IO ()))
   -- ^ Progress indicating function, called with the number of elements
   -- currently read and the total count of elements
 
   -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
-  -> m (Either String (I.DB indexes a))
+  -> IO (Either String (I.DB indexes a))
   -- ^ Resulting database or a parse/deserializiation error
 createDB contents count progress (I.Indexes indexes') = do
-  indexes <- liftIO $ indexes'
-  offsets <- liftIO $ VSM.new (fromIntegral count)
+  indexes <- indexes'
+  offsets <- VSM.new (fromIntegral count)
 
   let go bs (!x) f
         | not (B.null bs) = do
@@ -117,11 +114,8 @@ createDB contents count progress (I.Indexes indexes') = do
             S.Fail e _   -> pure $ Left e
             S.Partial _  -> pure $ Left "Unexpected Partial"
             S.Done a bs' -> do
-              liftIO $ VSM.write
-                offsets
-                x
-                (fromIntegral (B.length contents - B.length bs'))
-              liftIO $ I.insertIndex
+              VSM.write offsets x (fromIntegral (B.length contents - B.length bs'))
+              I.insertIndex
                 (I.Indexes' indexes :: I.Indexes' indexes a)
                 (fromIntegral x)
                 a
@@ -133,7 +127,7 @@ createDB contents count progress (I.Indexes indexes') = do
 
   r <- go contents 0 (S.runGetPartial S.get)
 
-  liftIO $ case r of
+  case r of
     Left e  -> pure $ Left e
     Right () -> do
       voffsets <- VS.unsafeFreeze offsets
@@ -142,28 +136,27 @@ createDB contents count progress (I.Indexes indexes') = do
 -- | Read a database from a file path and build up in-memory indexes
 -- according to the 'I.Indexes' description.
 readDB
-  :: forall indexes m a
-  . MonadIO m
-  => S.Serialize a
+  :: forall indexes a
+  . S.Serialize a
   => I.InsertIndex indexes a
 
   => FilePath
   -- ^ File path to database
 
-  -> (Maybe (Int -> Int -> m ()))
+  -> (Maybe (Int -> Int -> IO ()))
   -- ^ Progress indicating function, called with the number of elements
   -- currently read and the total count of elements
 
   -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
-  -> m (Either String (I.DB indexes a))
+  -> IO (Either String (I.DB indexes a))
   -- ^ Resulting database or a parse/deserializiation error
 readDB path progress indexes = do
-  meta <- liftIO $ B.readFile (path <> ".meta")
+  meta <- B.readFile (path <> ".meta")
 
   case S.decode meta of
     Left e -> pure $ Left e
     Right (count :: Word32) -> do
-      contents <- liftIO $ B.readFile path
+      contents <- B.readFile path
       createDB contents (fromIntegral count) progress indexes
