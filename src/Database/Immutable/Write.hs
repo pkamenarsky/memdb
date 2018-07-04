@@ -9,9 +9,10 @@ module Database.Immutable.Write
   , fromList
   ) where
 
+import           Control.Monad.IO.Class (MonadIO, liftIO)
+
 import qualified Data.ByteString as B
 import           Data.IORef
-import           Data.Monoid ((<>))
 import qualified Data.Serialize as S
 import           Data.Word
 
@@ -34,19 +35,20 @@ fromList = foldr B.append B.empty . (map S.encode)
 -- written elements.
 writeDB
   :: S.Serialize a
+  => MonadIO m
 
-  => FilePath
-  -- ^ File path, must be writeable
+  => ((Handle -> m ()) -> m ())
+  -- ^ Bracketed writing function; see 'System.IO.withFile'
 
-  -> ((a -> IO ()) -> IO ())
-  -- ^ Writing function; the continuation can be called multiple times
+  -> ((a -> m ()) -> m ())
+  -- ^ Output function; the continuation can be called multiple times
 
-  -> IO ()
-writeDB path f = do
-  count <- newIORef (0 :: Word32)
-  withFile path WriteMode $ \handle -> f $ \a -> do
+  -> m ()
+writeDB with f = do
+  count <- liftIO $ newIORef (0 :: Word32)
+  with $ \handle -> f $ \a -> liftIO $ do
     modifyIORef count (+1)
     B.hPut handle (S.encode a)
-  withFile (path <> ".meta") WriteMode $ \handle -> do
+  with $ \handle -> liftIO $ do
     count' <- readIORef count
     B.hPut handle (S.encode count')
