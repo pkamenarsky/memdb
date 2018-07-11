@@ -38,15 +38,16 @@ writeDB
   => FilePath
   -- ^ File path, must be writeable
 
-  -> ((a -> IO ()) -> IO ())
+  -> ((a -> IO ()) -> IO r)
   -- ^ Writing function; the continuation can be called multiple times
 
-  -> IO ()
+  -> IO r
 writeDB path f = do
   count <- newIORef (0 :: Word32)
-  withFile path WriteMode $ \handle -> f $ \a -> do
+  r <- withFile path WriteMode $ \handle -> f $ \a -> do
     modifyIORef count (+1)
     B.hPut handle (S.encode a)
   withFile (path <> ".meta") WriteMode $ \handle -> do
     count' <- readIORef count
     B.hPut handle (S.encode count')
+  pure r
