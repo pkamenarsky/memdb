@@ -28,6 +28,10 @@ module Database.Immutable
   -- * Database
     DB
 
+  -- * Index types
+  , ByteStringIndex
+  , Word32Index
+
   -- * Querying
   , (!)
   , slice
