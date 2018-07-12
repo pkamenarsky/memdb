@@ -92,11 +92,11 @@ lookup
   :: forall indexes s v a
   . S.Serialize a
   => LookupIndex indexes s v a
-  => DB indexes a       -- ^ Database
-  -> Name s             -- ^ Index name
+  => Name s             -- ^ Index name
   -> v                  -- ^ Index value
+  -> DB indexes a       -- ^ Database
   -> [a]                -- ^ Resulting items
-lookup db@(DB indexes _ _) name t
+lookup name t db@(DB indexes _ _)
   = map ((db `unsafeIndex`) . Offset . fromIntegral) is
   where
     is = unsafePerformIO
