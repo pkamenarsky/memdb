@@ -25,12 +25,18 @@ import           GHC.OverloadedLabels
 import           GHC.TypeLits
 
 -- | Offset into the database.
-newtype Offset a = Offset { getOffset :: Int }
+newtype Id a = Id { getId :: Int }
   deriving (Show, Generic, S.Serialize)
 
--- | Limit the number of elements read after an 'Offset'.
+incId :: Id a -> Id a
+incId (Id i) = Id (i + 1)
+
+-- | Limit the number of elements read after an 'Id'.
 newtype Limit a  = Limit { getLimit :: Int }
   deriving (Show, Generic, S.Serialize)
+
+subIds :: Id a -> Id a -> Limit a
+subIds (Id a) (Id b) = Limit (a - b)
 
 -- | Type tying a typelevel 'Symbol' to a value.
 --

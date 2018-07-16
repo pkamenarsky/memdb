@@ -72,7 +72,7 @@ indexProp elements = QC.monadicIO $ do
         DB.unindexed
         :: _ (Either String (DB.DB _ Int))
   forM_ [-10..length elements + 10] $ \index -> do
-    QC.assert (safeIndex index elements == db DB.! DB.Offset index)
+    QC.assert (safeIndex index elements == db DB.! DB.Id index)
   where
     binary = DB.fromList elements
 
@@ -87,7 +87,7 @@ sliceProp elements = QC.monadicIO $ do
         :: _ (Either String (DB.DB _ Int))
   forM_ [-10..length elements + 10] $ \index -> do
     forM_ [-10..length elements + 10] $ \limit -> do
-      let actual   = DB.slice db (DB.Offset index) (DB.Limit limit)
+      let actual   = DB.slice (DB.Id index) (DB.Limit limit) db
           expected = safeSlice index limit elements
       QC.assert (actual == expected)
   where
@@ -105,7 +105,7 @@ lookupPropWord32 elements = QC.monadicIO $ do
         :: _ (Either String (DB.DB _ Int))
 
   forM_ elements $ \element -> do
-    let actual   = DB.lookup db #index (fromIntegral element)
+    let actual   = DB.lookup #index (fromIntegral element) db 
         expected = filter (== element) elements
     QC.assert (actual == expected)
 
@@ -124,7 +124,7 @@ lookupPropByteString elements = QC.monadicIO $ do
         :: _ (Either String (DB.DB _ String))
 
   forM_ elements $ \element -> do
-    let actual   = DB.lookup db #index (BC.pack element)
+    let actual   = DB.lookup #index (BC.pack element) db
         expected = filter (== BC.pack element) (map BC.pack elements)
     QC.assert (map BC.pack actual == expected)
 

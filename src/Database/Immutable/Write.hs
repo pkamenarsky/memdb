@@ -1,8 +1,10 @@
 module Database.Immutable.Write
   (
   -- * Offset and Limit data types
-    I.Offset(..)
+    I.Id(..)
   , I.Limit(..)
+  , I.incId
+  , I.subIds
 
   -- * Writing
   , writeDB
