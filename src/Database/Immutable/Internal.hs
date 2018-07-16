@@ -26,14 +26,14 @@ import           GHC.TypeLits
 
 -- | Offset into the database.
 newtype Id a = Id { getId :: Int }
-  deriving (Show, Generic, S.Serialize)
+  deriving (Eq, Ord, Show, Generic, S.Serialize)
 
 incId :: Id a -> Id a
 incId (Id i) = Id (i + 1)
 
 -- | Limit the number of elements read after an 'Id'.
 newtype Limit a  = Limit { getLimit :: Int }
-  deriving (Show, Generic, S.Serialize)
+  deriving (Eq, Ord, Show, Generic, S.Serialize)
 
 subIds :: Id a -> Id a -> Limit a
 subIds (Id a) (Id b) = Limit (a - b)
