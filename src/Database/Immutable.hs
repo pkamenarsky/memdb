@@ -32,8 +32,8 @@ module Database.Immutable
   , ByteStringIndex
   , Word32Index
 
-  , Id
-  , Limit
+  , Id(Id)
+  , Limit(Limit)
   , incId
   , subIds
 
