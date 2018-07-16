@@ -1,8 +1,7 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -20,20 +19,19 @@ import qualified Data.Vector.Storable as V
 import qualified Multimap.ByteString as MMB
 import qualified Multimap.Word32 as MMW
 
-import           GHC.Generics
 import           GHC.OverloadedLabels
 import           GHC.TypeLits
 
 -- | Offset into the database.
 newtype Id a = Id { getId :: Word32 }
-  deriving (Eq, Ord, Show, Generic, S.Serialize)
+  deriving (Eq, Ord, Show, S.Serialize)
 
 incId :: Id a -> Id a
 incId (Id i) = Id (i + 1)
 
 -- | Limit the number of elements read after an 'Id'.
 newtype Limit a  = Limit { getLimit :: Word32 }
-  deriving (Eq, Ord, Show, Generic, S.Serialize)
+  deriving (Eq, Ord, Show, S.Serialize)
 
 subIds :: Id a -> Id a -> Limit a
 subIds (Id a) (Id b) = Limit (a - b)
