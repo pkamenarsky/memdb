@@ -63,10 +63,10 @@ import           Prelude hiding (length, lookup)
       $ B.drop (fromIntegral offset') contents
   | otherwise = Nothing 
   where
-    length = offsets V.!? index
+    length = offsets V.!? fromIntegral index
     offset
       | index == 0 = Just 0
-      | otherwise = offsets V.!? (index - 1)
+      | otherwise = offsets V.!? (fromIntegral index - 1)
 
 unsafeIndex :: S.Serialize a => DB indexes a -> Id a -> a
 unsafeIndex (DB _ contents offsets) (Id index)
@@ -74,19 +74,19 @@ unsafeIndex (DB _ contents offsets) (Id index)
       $ B.take (fromIntegral length)
       $ B.drop (fromIntegral offset) contents
   where
-    length = offsets V.! index
+    length = offsets V.! fromIntegral index
     offset
       | index == 0 = 0
-      | otherwise = offsets V.! (index - 1)
+      | otherwise = offsets V.! (fromIntegral index - 1)
 
 -- | /O(n)/ Yield a slice of the database. The database must contain
 -- at least i+n elements.
 slice :: S.Serialize a => Id a -> Limit a -> DB indexes a -> [a]
 slice (Id index) (Limit limit) db@(DB _ _ offsets) = map
-  ((db `unsafeIndex`) . Id)
-  [index'..max index' (min (V.length offsets) (index' + limit)) - 1]
+  ((db `unsafeIndex`) . Id . fromIntegral)
+  [index'..max index' (min (V.length offsets) (index' + fromIntegral limit)) - 1]
   where
-    index' = max index 0
+    index' = fromIntegral $ max index 0
 
 -- | /O(n)/ Lookup by index, @n@ being the count of returned elements.
 --

@@ -25,14 +25,14 @@ import           GHC.OverloadedLabels
 import           GHC.TypeLits
 
 -- | Offset into the database.
-newtype Id a = Id { getId :: Int }
+newtype Id a = Id { getId :: Word32 }
   deriving (Eq, Ord, Show, Generic, S.Serialize)
 
 incId :: Id a -> Id a
 incId (Id i) = Id (i + 1)
 
 -- | Limit the number of elements read after an 'Id'.
-newtype Limit a  = Limit { getLimit :: Int }
+newtype Limit a  = Limit { getLimit :: Word32 }
   deriving (Eq, Ord, Show, Generic, S.Serialize)
 
 subIds :: Id a -> Id a -> Limit a

@@ -1,9 +1,11 @@
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE OverloadedLabels #-}
+{-# OPTIONS_GHC -Wno-overflowed-literals #-}
 
 import          Control.Monad
 
 import qualified Data.ByteString.Char8 as BC
+import           Data.Word (Word32)
 
 import qualified Database.Immutable as DB
 import qualified Database.Immutable.Read as DB
@@ -50,17 +52,18 @@ main = hspec $ do
           elements <- QC.vectorOf 5 QC.arbitrary
           QC.listOf (QC.elements elements)
 
-safeIndex :: Int -> [a] -> Maybe a
+safeIndex :: Word32 -> [a] -> Maybe a
 safeIndex index as
-  | index < 0         = Nothing
-  | index >= length as = Nothing
-  | otherwise         = Just (as !! index)
+  | index' >= length as = Nothing
+  | otherwise           = Just (as !! index')
+  where
+    index' = fromIntegral index
 
-safeSlice :: Int -> Int -> [a] -> [a]
+safeSlice :: Word32 -> Word32 -> [a] -> [a]
 safeSlice offset limit as = take limit' $ drop offset' as
   where
-    offset' = max 0 offset
-    limit'  = max 0 (min (length as) (offset' + limit) - offset')
+    offset' = max 0 $ fromIntegral offset
+    limit'  = max 0 (min (length as) (offset' + fromIntegral limit) - offset')
 
 indexProp :: [Int] -> QC.Property
 indexProp elements = QC.monadicIO $ do
@@ -71,7 +74,7 @@ indexProp elements = QC.monadicIO $ do
         Nothing
         DB.unindexed
         :: _ (Either String (DB.DB _ Int))
-  forM_ [-10..length elements + 10] $ \index -> do
+  forM_ [-10..fromIntegral (length elements) + 10] $ \index -> do
     QC.assert (safeIndex index elements == db DB.! DB.Id index)
   where
     binary = DB.fromList elements
@@ -85,8 +88,8 @@ sliceProp elements = QC.monadicIO $ do
         Nothing
         DB.unindexed
         :: _ (Either String (DB.DB _ Int))
-  forM_ [-10..length elements + 10] $ \index -> do
-    forM_ [-10..length elements + 10] $ \limit -> do
+  forM_ [-10..fromIntegral (length elements) + 10] $ \index -> do
+    forM_ [-10..fromIntegral (length elements) + 10] $ \limit -> do
       let actual   = DB.slice (DB.Id index) (DB.Limit limit) db
           expected = safeSlice index limit elements
       QC.assert (actual == expected)
