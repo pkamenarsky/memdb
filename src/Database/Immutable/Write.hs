@@ -25,7 +25,7 @@ import           System.IO
 -- back using 'Database.Immutable.Read.createDB'.
 fromList
   :: S.Serialize a
-  => [a] -- ^ Writing function; the continuation can be called multiple times
+  => [a]
   -> B.ByteString
 fromList = foldr B.append B.empty . (map S.encode)
 

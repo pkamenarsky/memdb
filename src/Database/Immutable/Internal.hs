@@ -26,6 +26,11 @@ import           GHC.TypeLits
 newtype Id a = Id { getId :: Word32 }
   deriving (Eq, Ord, Show, S.Serialize)
 
+-- | Zero 'Id'.
+zeroId :: Id a
+zeroId = Id 0
+
+-- | Increment 'Id'.
 incId :: Id a -> Id a
 incId (Id i) = Id (i + 1)
 
@@ -36,9 +41,11 @@ coerceId (Id i) = Id i
 newtype Limit a  = Limit { getLimit :: Word32 }
   deriving (Eq, Ord, Show, S.Serialize)
 
+-- | Add a 'Limit' to an 'Id'.
 addLimit :: Id a -> Limit a -> Id a
 addLimit (Id a) (Limit b) = Id (a + b - 1)
 
+-- | Subtract two indexes, returning a 'Limit'.
 subIds :: Id a -> Id a -> Limit a
 subIds (Id a) (Id b) = Limit (a - b)
 

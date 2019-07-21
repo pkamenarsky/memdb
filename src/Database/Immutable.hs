@@ -34,6 +34,8 @@ module Database.Immutable
 
   , Id(Id)
   , Limit(Limit)
+  , length
+  , zeroId
   , incId
   , addLimit
   , subIds
@@ -55,16 +57,20 @@ import           System.IO.Unsafe (unsafePerformIO)
 
 import           Prelude hiding (length, lookup)
 
--- | /O(1)/ Yield the database element at the specified position.
+-- | /O(1)/ Return number of records contained in the database.
+length :: DB indexes a -> Limit a
+length (DB _ _ offsets) = Limit (fromIntegral $ V.length offsets)
+
+-- | /O(1)/ Return the database element at the specified position.
 (!) :: S.Serialize a => DB indexes a -> Id a -> Maybe a
 (!) (DB _ contents offsets) (Id index)
-  | Just length' <- length
+  | Just count' <- count
   , Just offset' <- offset = either (const Nothing) Just $ S.decode
-      $ B.take (fromIntegral length')
+      $ B.take (fromIntegral count')
       $ B.drop (fromIntegral offset') contents
   | otherwise = Nothing 
   where
-    length = offsets V.!? fromIntegral index
+    count = offsets V.!? fromIntegral index
     offset
       | index == 0 = Just 0
       | otherwise = offsets V.!? (fromIntegral index - 1)
@@ -72,15 +78,15 @@ import           Prelude hiding (length, lookup)
 unsafeIndex :: S.Serialize a => DB indexes a -> Id a -> a
 unsafeIndex (DB _ contents offsets) (Id index)
   = either (error "unsafeIndex") id $ S.decode
-      $ B.take (fromIntegral length)
+      $ B.take (fromIntegral count)
       $ B.drop (fromIntegral offset) contents
   where
-    length = offsets V.! fromIntegral index
+    count = offsets V.! fromIntegral index
     offset
       | index == 0 = 0
       | otherwise = offsets V.! (fromIntegral index - 1)
 
--- | /O(n)/ Yield a slice of the database. The database must contain
+-- | /O(n)/ Return a slice of the database. The database must contain
 -- at least i+n elements.
 slice :: S.Serialize a => Id a -> Limit a -> DB indexes a -> [a]
 slice (Id index) (Limit limit) db@(DB _ _ offsets) = map
