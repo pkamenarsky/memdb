@@ -47,18 +47,21 @@ word32Index
   => I.Name s
   -- ^ Index name
 
-  -> (a -> Word32)
+  -> (a -> b)
+  -- ^ Projecting function
+
+  -> (b -> Word32)
   -- ^ Index computing function
 
   -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
-  -> I.Indexes ('(s, I.Word32Index a):indexes) a
+  -> I.Indexes ('(s, I.Word32Index b):indexes) a
   -- ^ Resulting 'I.Indexes' desctiption, inlcuding the new 'Word32' index
-word32Index _ f (I.Indexes indexes') = I.Indexes $ do
+word32Index _ p f (I.Indexes indexes') = I.Indexes $ do
   indexes <- indexes'
   mm <- MMW.new
-  pure (mm, f, indexes)
+  pure (mm, p, f, indexes)
 
 -- | Add a 'B.ByteString' index to an 'I.Indexes' description to be built when
 -- reading a database.
@@ -68,19 +71,22 @@ byteStringIndex
   => I.Name s
   -- ^ Index name
 
-  -> (a -> B.ByteString)
+  -> (a -> b)
+  -- ^ Projecting function
+
+  -> (b -> B.ByteString)
   -- ^ Index computing function
 
   -> I.Indexes indexes a
   -- ^ 'Indexes' description
 
-  -> I.Indexes ('(s, I.ByteStringIndex a):indexes) a
+  -> I.Indexes ('(s, I.ByteStringIndex b):indexes) a
   -- ^ Resulting 'I.Indexes' desctiption, inlcuding the new 'B.ByteString'
   -- index
-byteStringIndex _ f (I.Indexes indexes') = I.Indexes $ do
+byteStringIndex _ p f (I.Indexes indexes') = I.Indexes $ do
   indexes <- indexes'
   mm <- MMB.new
-  pure (mm, f, indexes)
+  pure (mm, p, f, indexes)
 
 -- | Create a database from a 'B.ByteString' and build up
 -- in-memory indexes according to the 'I.Indexes' description.

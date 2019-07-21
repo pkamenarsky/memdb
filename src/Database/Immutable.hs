@@ -35,6 +35,7 @@ module Database.Immutable
   , Id(Id)
   , Limit(Limit)
   , incId
+  , addLimit
   , subIds
 
   -- * Querying

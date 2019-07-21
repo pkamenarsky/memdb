@@ -29,9 +29,15 @@ newtype Id a = Id { getId :: Word32 }
 incId :: Id a -> Id a
 incId (Id i) = Id (i + 1)
 
+coerceId :: Id a -> Id b
+coerceId (Id i) = Id i
+
 -- | Limit the number of elements read after an 'Id'.
 newtype Limit a  = Limit { getLimit :: Word32 }
   deriving (Eq, Ord, Show, S.Serialize)
+
+addLimit :: Id a -> Limit a -> Id a
+addLimit (Id a) (Limit b) = Id (a + b - 1)
 
 subIds :: Id a -> Id a -> Limit a
 subIds (Id a) (Id b) = Limit (a - b)
@@ -91,31 +97,36 @@ data Indexes' (indexes :: [(Symbol, *)]) a = Indexes' (MapIndexes indexes a)
 data ByteStringIndex a = ByteStringIndex
 data Word32Index     a = Word32Index
 
+type family Trd t where
+  Trd (a, b, c) = c
+
 type family MapIndexes (indexes :: [(Symbol, *)]) a :: * where
   MapIndexes '[] a = ()
-  MapIndexes ('(s, ByteStringIndex a):xs) a = ( MMB.Multimap
-                                              , a -> B.ByteString
+  MapIndexes ('(s, ByteStringIndex b):xs) a = ( MMB.Multimap
+                                              , a -> b
+                                              , b -> B.ByteString
                                               , MapIndexes xs a
                                               )
-  MapIndexes ('(s, Word32Index a):xs)     a = ( MMW.Multimap
-                                              , a -> Word32
+  MapIndexes ('(s, Word32Index b):xs)     a = ( MMW.Multimap
+                                              , a -> b
+                                              , b -> Word32
                                               , MapIndexes xs a
                                               )
 
 class LookupIndex indexes (s :: Symbol) t a | indexes s a -> t where
   lookupIndex :: Indexes' indexes a -> Name s -> t -> IO [Word32]
 
-instance LookupIndex ('(s, ByteStringIndex a):xs) s B.ByteString a where
-  lookupIndex (Indexes' (mm, _, _)) _ = MMB.lookup mm
+instance LookupIndex ('(s, Word32Index b):xs) s b a where
+  lookupIndex (Indexes' (mm, _, f, _)) _ = MMW.lookup mm . f
 
-instance LookupIndex ('(s, Word32Index a):xs) s Word32 a where
-  lookupIndex (Indexes' (mm, _, _)) _ = MMW.lookup mm
+instance LookupIndex ('(s, ByteStringIndex b):xs) s b a where
+  lookupIndex (Indexes' (mm, _, f, _)) _ = MMB.lookup mm . f
 
 instance {-# OVERLAPPABLE #-}
-  ( MapIndexes (x:xs) a ~ (y, f, MapIndexes xs a)
+  ( MapIndexes (x:xs) a ~ (y, u, w, MapIndexes xs a)
   , LookupIndex xs s t a
   ) => LookupIndex (x:xs) s t a where
-    lookupIndex (Indexes' (_, _, xs))
+    lookupIndex (Indexes' (_, _, _, xs))
       = lookupIndex (Indexes' xs :: Indexes' xs a)
 
 class InsertIndex indexes a where
@@ -124,12 +135,16 @@ class InsertIndex indexes a where
 instance InsertIndex '[] a where
   insertIndex _ _ _ = pure ()
 
-instance InsertIndex xs a => InsertIndex ('(s, Word32Index a):xs) a where
-  insertIndex (Indexes' (mm, f, xs)) index a = do
-    MMW.insert mm (f a) index
+instance ( MapIndexes ('(s, Word32Index b) : xs) a ~ (MMW.Multimap, a -> b, b -> Word32, MapIndexes xs a)
+         , InsertIndex xs a
+         ) => InsertIndex ('(s, Word32Index b):xs) a where
+  insertIndex (Indexes' (mm, p, f, xs)) index a = do
+    MMW.insert mm (f $ p a) index
     insertIndex (Indexes' xs :: Indexes' xs a) index a
 
-instance InsertIndex xs a => InsertIndex ('(s, ByteStringIndex a):xs) a where
-  insertIndex (Indexes' (mm, f, xs)) index a = do
-    MMB.insert mm (f a) index
+instance ( MapIndexes ('(s, ByteStringIndex b) : xs) a ~ (MMB.Multimap, a -> b, b -> B.ByteString, MapIndexes xs a)
+         , InsertIndex xs a
+         ) => InsertIndex ('(s, ByteStringIndex b):xs) a where
+  insertIndex (Indexes' (mm, p, f, xs)) index a = do
+    MMB.insert mm (f $ p a) index
     insertIndex (Indexes' xs :: Indexes' xs a) index a
