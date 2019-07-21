@@ -103,12 +103,12 @@ lookupPropWord32 elements = QC.monadicIO $ do
         binary
         (length elements)
         Nothing
-        $ DB.word32Index #index fromIntegral 
+        $ DB.word32Index #index id fromIntegral
           DB.unindexed
         :: _ (Either String (DB.DB _ Int))
 
   forM_ elements $ \element -> do
-    let actual   = DB.lookup #index (fromIntegral element) db 
+    let actual   = DB.lookup #index element db 
         expected = filter (== element) elements
     QC.assert (actual == expected)
 
@@ -122,12 +122,12 @@ lookupPropByteString elements = QC.monadicIO $ do
         binary
         (length elements)
         Nothing
-        $ DB.byteStringIndex #index BC.pack
+        $ DB.byteStringIndex #index id BC.pack
           DB.unindexed
         :: _ (Either String (DB.DB _ String))
 
   forM_ elements $ \element -> do
-    let actual   = DB.lookup #index (BC.pack element) db
+    let actual   = DB.lookup #index element db
         expected = filter (== BC.pack element) (map BC.pack elements)
     QC.assert (map BC.pack actual == expected)
 
