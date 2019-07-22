@@ -41,13 +41,19 @@ coerceId (Id i) = Id i
 newtype Limit a  = Limit { getLimit :: Word32 }
   deriving (Eq, Ord, Show, S.Serialize)
 
--- | Add a 'Limit' to an 'Id'.
+-- | Add a 'Limit' to an 'Id', so that:
+--
+-- @'addLimit' a ('subIds' b a) == b@
 addLimit :: Id a -> Limit a -> Id a
 addLimit (Id a) (Limit b) = Id (a + b - 1)
 
--- | Subtract two indexes, returning a 'Limit'.
+-- | Subtract two 'Id's, returning a 'Limit' including both
+-- - i.e. @'Database.Immutable.slice' a ('subIds' b a) db@
+-- will include both @a@ and @b@.
+--
+-- @'addLimit' a ('subIds' b a) == b@
 subIds :: Id a -> Id a -> Limit a
-subIds (Id a) (Id b) = Limit (a - b)
+subIds (Id a) (Id b) = Limit (a - b + 1)
 
 -- | Type tying a typelevel 'Symbol' to a value.
 --
