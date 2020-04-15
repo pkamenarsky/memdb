@@ -44,6 +44,8 @@ newtype Limit a  = Limit { getLimit :: Word32 }
 -- | Add a 'Limit' to an 'Id', so that:
 --
 -- @'addLimit' a ('subIds' b a) == b@
+
+-- TODO: addLimit :: DB indexes a -> Id a -> Limit a -> Id (Maybe a)
 addLimit :: Id a -> Limit a -> Id a
 addLimit (Id a) (Limit b) = Id (a + b - 1)
 
