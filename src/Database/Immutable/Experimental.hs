@@ -32,20 +32,22 @@ data ForeignId (c :: R) t name a = ForeignId deriving Show
 data EId = EidInt String Int | EidString String String deriving Show
 
 data Person c = Person
-  { pid :: Id Int
+  { pid :: Id Int                                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name :: String
-  , friend :: Maybe (ForeignId c Int "persons.pid" Person)          -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , friend :: Maybe (ForeignId c Int "persons.pid" Person)            -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer :: Maybe (ForeignId c String "employers.owner" Employer) -- could be turned into Maybe ~(Employer Resolved)
   , pid2 :: Id String
   } deriving (Show, G.Generic, Record)
 
+-- lookup (pid $ persons db) 4
+
 data Employer c = Employer
   { owner :: Id String
   , address :: String
-  , employees :: [ForeignId c Int "persons.pid" Person]  -- could be turned into [Person]
+  , employees :: [ForeignId c Int "persons.pid" Person]  -- could be turned into [~(Person Resolved)]
   } deriving (Show, G.Generic, Record)
 
-data TableMode = Insert | Memory | Lookup
+data TableMode = Insert | Memory | Cannonical
 
 data InternalTable a = InternalTable
   { itIds :: IORef (M.Map String (M.Map EId Int))
@@ -55,9 +57,10 @@ data InternalTable a = InternalTable
 type family Table (c :: TableMode) a where
   Table 'Insert a = [a 'Unresolved]
   Table 'Memory a = InternalTable (a 'Unresolved)
+  Table 'Cannonical a = a 'Unresolved
 
 data CompanyTables (c :: TableMode) = CompanyTables
-  { persons :: Table c Person  -- could be turned into (DB ... -> #name -> Person Resolved)
+  { persons :: Table c Person
   , employers :: Table c Employer
   } deriving (G.Generic, Tables)
 
@@ -75,15 +78,16 @@ data DB tables indexes = DB
 
 --------------------------------------------------------------------------------
 
-type family ExpandRecord record eot where
-  ExpandRecord record () = ()
-  ExpandRecord record (Either fields Eot.Void) = Either (ExpandRecord record fields) Eot.Void
-  ExpandRecord record (Eot.Named name a, fields) = (Eot.Named (AppendSymbol record name) a, ExpandRecord record fields)
+type family ExpandRecord record where
+  ExpandRecord () = ()
+  ExpandRecord (Either fields Eot.Void) = Either (ExpandRecord fields) Eot.Void
+  ExpandRecord (Eot.Named name (Id a), fields) = (Eot.Named name a, ExpandRecord fields)
+  ExpandRecord (Eot.Named name b, fields) = ExpandRecord fields
 
-type family Expand eot where
+type family Expand table where
   Expand () = ()
   Expand (Either records Eot.Void) = Either (Expand records) Eot.Void
-  Expand (Eot.Named name [record], records) = ((Eot.Named name (Eot.Eot record)), Expand records)
+  Expand (Eot.Named name record, records) = ((Eot.Named name (ExpandRecord (Eot.Eot record))), Expand records)
 
 type family Lookup s eot where
   Lookup name (Either fields Eot.Void) = Lookup name fields
