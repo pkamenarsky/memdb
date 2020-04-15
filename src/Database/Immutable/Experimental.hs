@@ -15,39 +15,48 @@
 
 module Database.Immutable.Experimental where
 
-import Data.Semigroup ((<>))
-import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
+import           Data.Semigroup ((<>))
+import           Data.IORef (IORef, modifyIORef, newIORef, readIORef)
+import qualified Data.Map as M
 
 import qualified GHC.Generics as G
-import           GHC.TypeLits (KnownSymbol, symbolVal)
+import           GHC.TypeLits (KnownSymbol, AppendSymbol, symbolVal)
 import qualified Generics.Eot as Eot
 
 data R = Unresolved | Resolved
 
+-- TODO: autoincrementing ids
 data Id t = Id t deriving Show
 data ForeignId (c :: R) t name a = ForeignId deriving Show
+
+data EId = EidInt String Int | EidString String String deriving Show
 
 data Person c = Person
   { pid :: Id Int
   , name :: String
-  , friend :: Maybe (ForeignId c Int "pid" Person)          -- could be turned into Maybe (Person Resolved)
-  , employer :: Maybe (ForeignId c String "owner" Employer) -- could be turned into Maybe (Employer Resolved)
+  , friend :: Maybe (ForeignId c Int "persons.pid" Person)          -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , employer :: Maybe (ForeignId c String "employers.owner" Employer) -- could be turned into Maybe ~(Employer Resolved)
   , pid2 :: Id String
   } deriving (Show, G.Generic, Record)
 
 data Employer c = Employer
   { owner :: Id String
   , address :: String
-  , employees :: [ForeignId c Int "pid" Person]  -- could be turned into [Person]
-  }
+  , employees :: [ForeignId c Int "persons.pid" Person]  -- could be turned into [Person]
+  } deriving (Show, G.Generic, Record)
 
 data TableMode = Insert | Memory | Lookup
 
+data InternalTable a = InternalTable
+  { itIds :: IORef (M.Map String (M.Map EId Int))
+  , itRecords :: IORef [a]
+  }
+
 type family Table (c :: TableMode) a where
   Table 'Insert a = [a 'Unresolved]
-  Table 'Memory a = IORef [a 'Unresolved]
+  Table 'Memory a = InternalTable (a 'Unresolved)
 
-data CompanyTables c = CompanyTables
+data CompanyTables (c :: TableMode) = CompanyTables
   { persons :: Table c Person  -- could be turned into (DB ... -> #name -> Person Resolved)
   , employers :: Table c Employer
   } deriving (G.Generic, Tables)
@@ -61,12 +70,30 @@ data DBIndexes c = DBIndexes
 
 data DB tables indexes = DB
   { dbTables :: tables 'Memory
-  , dbIndexes :: indexes
+  , dbIndexes :: indexes -- TODO: indexes shouldn't be part of the database; compute separately
   }
 
 --------------------------------------------------------------------------------
 
-class GTables mt it where
+type family ExpandRecord record eot where
+  ExpandRecord record () = ()
+  ExpandRecord record (Either fields Eot.Void) = Either (ExpandRecord record fields) Eot.Void
+  ExpandRecord record (Eot.Named name a, fields) = (Eot.Named (AppendSymbol record name) a, ExpandRecord record fields)
+
+type family Expand eot where
+  Expand () = ()
+  Expand (Either records Eot.Void) = Either (Expand records) Eot.Void
+  Expand (Eot.Named name [record], records) = ((Eot.Named name (Eot.Eot record)), Expand records)
+
+type family Lookup s eot where
+  Lookup name (Either fields Eot.Void) = Lookup name fields
+  Lookup name (field, fields) = Lookup name fields
+  Lookup name (Eot.Named name field) = field
+
+type family Consistent eot where
+  Consistent (Either eot Eot.Void) = Consistent eot
+
+class GTables mt it | mt -> it, it -> mt where
   gInsert :: mt -> it -> IO ()
 
 instance GTables () () where
@@ -76,8 +103,20 @@ instance (GTables mt mi) => GTables (Either mt Eot.Void) (Either mi Eot.Void) wh
   gInsert (Left mt) (Left mi) = gInsert mt mi
   gInsert _ _ = undefined
 
-instance (GTables mt mi) => GTables (Eot.Named name (IORef [a]), mt) (Eot.Named name [a], mi) where
-  gInsert (Eot.Named ref, mt) (Eot.Named as, mi) = modifyIORef ref (as <>) >> gInsert mt mi
+-- TODO: consistency checks
+-- * already existing ids
+-- * referencing non-existent foreign ids
+instance (GTables mt mi, Record a) => GTables (Eot.Named name (InternalTable a), mt) (Eot.Named name [a], mi) where
+  gInsert (Eot.Named it, mt) (Eot.Named as, mi) = do
+    sequence_
+      [ modifyIORef (itIds it) undefined -- M.singleton recId M.empty
+      | recId <- recIds
+      ]
+    gInsert mt mi
+    where
+      recIds =case as of
+        (a:_) -> gatherIds a
+        _ -> []
 
 class Tables tables where
   insert :: tables 'Memory -> tables 'Insert -> IO ()
@@ -91,8 +130,6 @@ class Tables tables where
   insert mt mi = gInsert (Eot.toEot mt) (Eot.toEot mi)
 
 --------------------------------------------------------------------------------
-
-data EId = EidInt String Int | EidString String String deriving Show
 
 class GRecord a where
   gGatherIds :: a -> [EId]
@@ -149,12 +186,13 @@ testMain = do
   personsRef <- newIORef []
   employersRef <- newIORef []
 
-  let mt = CompanyTables personsRef employersRef
+  let mt = CompanyTables undefined undefined
 
   insert mt $ CompanyTables
     { persons = [person, person]
     , employers = []
     }
 
-  ps <- readIORef personsRef
-  print ps
+  -- ps <- readIORef personsRef
+  -- print ps
+  pure ()
