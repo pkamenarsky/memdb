@@ -19,6 +19,7 @@ import Data.Semigroup ((<>))
 import Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 
 import qualified GHC.Generics as G
+import           GHC.TypeLits (KnownSymbol, symbolVal)
 import qualified Generics.Eot as Eot
 
 data R = Unresolved | Resolved
@@ -75,8 +76,8 @@ instance (GTables mt mi) => GTables (Either mt Eot.Void) (Either mi Eot.Void) wh
   gInsert (Left mt) (Left mi) = gInsert mt mi
   gInsert _ _ = undefined
 
-instance (GTables mt mi) => GTables (IORef [a], mt) ([a], mi) where
-  gInsert (ref, mt) (as, mi) = modifyIORef ref (as <>) >> gInsert mt mi
+instance (GTables mt mi) => GTables (Eot.Named name (IORef [a]), mt) (Eot.Named name [a], mi) where
+  gInsert (Eot.Named ref, mt) (Eot.Named as, mi) = modifyIORef ref (as <>) >> gInsert mt mi
 
 class Tables tables where
   insert :: tables 'Memory -> tables 'Insert -> IO ()
@@ -94,34 +95,30 @@ class Tables tables where
 data EId = EidInt String Int | EidString String String deriving Show
 
 class GRecord a where
-  gGatherIds :: [String] -> a -> [EId]
+  gGatherIds :: a -> [EId]
 
 instance GRecord () where
-  gGatherIds _ () = []
+  gGatherIds () = []
 
--- TODO: we can totally support sum types
+-- TODO: we could totally support sum types
+
 instance GRecord a => GRecord (Either a Eot.Void) where
-  gGatherIds fields (Left a) = gGatherIds fields a
-  gGatherIds _ _ = undefined
+  gGatherIds (Left a) = gGatherIds a
+  gGatherIds _ = undefined
 
-instance GRecord as => GRecord (Id String, as) where
-  gGatherIds (field:fields) ((Id v), as) = EidString field v:gGatherIds fields as
-  gGatherIds _ _ = undefined
+instance (GRecord as, KnownSymbol name) => GRecord (Eot.Named name (Id String), as) where
+  gGatherIds (Eot.Named (Id v), as) = EidString (symbolVal (Eot.Proxy :: Eot.Proxy name)) v:gGatherIds as
 
-instance GRecord as => GRecord (Id Int, as) where
-  gGatherIds (field:fields) ((Id v), as) = EidInt field v:gGatherIds fields as
-  gGatherIds _ _ = undefined
+instance (GRecord as, KnownSymbol name) => GRecord (Eot.Named name (Id Int), as) where
+  gGatherIds (Eot.Named (Id v), as) = EidInt (symbolVal (Eot.Proxy :: Eot.Proxy name)) v:gGatherIds as
 
 instance {-# OVERLAPPABLE #-} GRecord as => GRecord (a, as) where
-  gGatherIds (_:fields) (_, as) = gGatherIds fields as
-  gGatherIds _ _ = undefined
+  gGatherIds (_, as) = gGatherIds as
 
 class Record a where
   gatherIds :: a -> [EId]
   default gatherIds :: Eot.HasEot a => GRecord (Eot.Eot a) => a -> [EId]
-  gatherIds a = gGatherIds fields (Eot.toEot a)
-    where
-      (Eot.Datatype _ (Eot.Constructor _ (Eot.Selectors fields):_)) = Eot.datatype (Eot.Proxy :: Eot.Proxy a)
+  gatherIds a = gGatherIds (Eot.toEot a)
 
 person :: Person 'Unresolved
 person = Person
