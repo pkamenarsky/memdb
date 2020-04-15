@@ -1,4 +1,5 @@
 .stack-work/
+.dir-locals.el
 memdb.cabal
 *~
 *.cbor
