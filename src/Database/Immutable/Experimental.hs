@@ -1,3 +1,4 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -6,6 +7,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -24,6 +26,24 @@ import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
 
+-- table1
+--  id
+--  field1
+--  field2 --+
+--  field3   |
+--           |
+-- table2    |
+--  id <-----+
+--  field1
+--  field2
+--  field3
+
+-- Data model
+--   tableName ~> idName ~> idValue ~> index
+--   tableName ~> [record]
+
+--------------------------------------------------------------------------------
+
 -- TODO: autoincrementing ids
 
 data RecordId t = RecordId t deriving Show
@@ -39,7 +59,7 @@ data EId = EidInt String Int | EidString String String deriving Show
 data Person c = Person
   { pid :: Id c Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name :: String
-  , friend :: Maybe (ForeignId c "persons2" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , friend :: Maybe (ForeignId c "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer :: Maybe (ForeignId c "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2 :: Id c String
   } deriving (G.Generic)
@@ -50,12 +70,28 @@ deriving instance Record (Person 'Unresolved)
 lookup :: tables 'Memory -> (tables 'Lookup -> Id 'Lookup t) -> t -> a
 lookup = undefined
 
-lookupF
+--------------------------------------------------------------------------------
+
+class  GLookupForeign mtables ctables | mtables -> ctables, ctables -> mtables where
+  gLookupForeign
+    :: 'Just recordType ~ Lookup record (ExpandTables ctables)
+    => mtables
+    -> ForeignId c record field
+    -> recordType
+
+instance ( GLookupForeign mtables ctables
+         , 'Just recordType ~ Lookup record (ExpandTables (Eot.Eot ctables)) 
+         ) =>
+  GLookupForeign (Either mtables Eot.Void) (Either ctables Eot.Void) where
+    gLookupForeign :: Either mtables Eot.Void -> ForeignId c record field -> recordType
+    gLookupForeign (Left mtables) fid = gLookupForeign mtables fid
+
+lookupForeign
   :: 'Just (recordType, fields) ~ Lookup record (ExpandTables (Eot.Eot (tables 'Cannonical))) -- Look up record type from tables
   => tables 'Memory
   -> ForeignId c record field
   -> recordType
-lookupF = undefined
+lookupForeign = undefined
 
 -- lookup db (pid . persons) 4
 
@@ -119,12 +155,6 @@ type family Lookup (a :: Symbol) (eot :: *) :: (Maybe *) where
   Lookup name ((t, Eot.Named name a), as) = 'Just (t, a)
   Lookup name (a, as) = Lookup name as
   Lookup name a = TypeError ('Text "Can't lookup symbol in list")
-
-type family LookupRecordFieldType (record :: Maybe Symbol) (field :: Symbol) (eot :: Maybe *) :: Maybe * where
-  LookupRecordFieldType ('Just record) field ('Just eot)
-    = LookupRecordFieldType 'Nothing field (Lookup record eot)
-  LookupRecordFieldType 'Nothing field ('Just eot) = Lookup field eot
-  LookupRecordFieldType a b c = TypeError ('Text "Can't find field in record")
 
 type family Consistent eot where
   Consistent (Either eot Eot.Void) = Consistent eot
