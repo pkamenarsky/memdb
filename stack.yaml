@@ -41,7 +41,7 @@ packages:
 extra-deps:
 - ./vendor/generics-eot
 
-# Override default flag values for local packages and extra-deps
+# override default flag values for local packages and extra-deps
 # flags: {}
 
 # Extra package databases containing global packages

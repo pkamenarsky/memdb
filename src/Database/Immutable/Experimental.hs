@@ -21,7 +21,7 @@ import           Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import qualified Data.Map as M
 
 import qualified GHC.Generics as G
-import           GHC.TypeLits (KnownSymbol, AppendSymbol, symbolVal)
+import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
 
 -- TODO: autoincrementing ids
@@ -32,15 +32,15 @@ type family Id (c :: TableMode) t where
   Id 'Unresolved t = RecordId t
   Id 'Lookup t = String
 
-data ForeignId (c :: TableMode) t name a = ForeignId deriving Show
+data ForeignId (c :: TableMode) (table :: Symbol) (field :: Symbol) = ForeignId deriving Show
 
 data EId = EidInt String Int | EidString String String deriving Show
 
 data Person c = Person
-  { pid :: Id c Int                                                   -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
+  { pid :: Id c Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name :: String
-  , friend :: Maybe (ForeignId c Int "persons.pid" Person)            -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
-  , employer :: Maybe (ForeignId c String "employers.owner" Employer) -- could be turned into Maybe ~(Employer Resolved)
+  , friend :: Maybe (ForeignId c "persons2" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , employer :: Maybe (ForeignId c "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2 :: Id c String
   } deriving (G.Generic)
 
@@ -50,12 +50,19 @@ deriving instance Record (Person 'Unresolved)
 lookup :: tables 'Memory -> (tables 'Lookup -> Id 'Lookup t) -> t -> a
 lookup = undefined
 
+lookupF
+  :: 'Just (recordType, fields) ~ Lookup record (ExpandTables (Eot.Eot (tables 'Cannonical))) -- Look up record type from tables
+  => tables 'Memory
+  -> ForeignId c record field
+  -> recordType
+lookupF = undefined
+
 -- lookup db (pid . persons) 4
 
 data Employer c = Employer
   { owner :: Id c String
   , address :: String
-  , employees :: [ForeignId c Int "persons.pid" Person]  -- could be turned into [~(Person Resolved)]
+  , employees :: [ForeignId c "persons" "pid"]  -- could be turned into [~(Person Resolved)]
   } deriving (G.Generic)
 
 deriving instance Show (Employer 'Unresolved)
@@ -93,24 +100,36 @@ data DB tables indexes = DB
 
 --------------------------------------------------------------------------------
 
-type family ExpandRecord record where
-  ExpandRecord () = ()
-  ExpandRecord (Either fields Eot.Void) = Either (ExpandRecord fields) Eot.Void
-  ExpandRecord (Eot.Named name (RecordId a), fields) = (Eot.Named name a, ExpandRecord fields)
-  ExpandRecord (Eot.Named name b, fields) = ExpandRecord fields
+type family ExpandRecord (parent :: Symbol) (record :: *) where
+  ExpandRecord parent () = ()
+  ExpandRecord parent (Either fields Eot.Void) = ExpandRecord parent fields
+  ExpandRecord parent (Eot.Named name (RecordId a), fields)
+    = (Eot.Named name a, ExpandRecord parent fields)
+  ExpandRecord parent (Eot.Named name b, fields) = ExpandRecord parent fields
 
-type family Expand table where
-  Expand () = ()
-  Expand (Either records Eot.Void) = Either (Expand records) Eot.Void
-  Expand (Eot.Named name record, records) = ((Eot.Named name (ExpandRecord (Eot.Eot record))), Expand records)
+type family ExpandTables table where
+  ExpandTables () = ()
+  ExpandTables (Either records Eot.Void) = ExpandTables records
+  ExpandTables (Eot.Named name record, records)
+    = ((record, Eot.Named name (ExpandRecord name (Eot.Eot record))), ExpandTables records)
 
-type family Lookup s eot where
-  Lookup name (Either fields Eot.Void) = Lookup name fields
-  Lookup name (field, fields) = Lookup name fields
-  Lookup name (Eot.Named name field) = field
+type family Lookup (a :: Symbol) (eot :: *) :: (Maybe *) where
+  Lookup name () = TypeError ('Text "Can't lookup symbol in list")
+  Lookup name (Eot.Named name a, as) = 'Just a
+  Lookup name ((t, Eot.Named name a), as) = 'Just (t, a)
+  Lookup name (a, as) = Lookup name as
+  Lookup name a = TypeError ('Text "Can't lookup symbol in list")
+
+type family LookupRecordFieldType (record :: Maybe Symbol) (field :: Symbol) (eot :: Maybe *) :: Maybe * where
+  LookupRecordFieldType ('Just record) field ('Just eot)
+    = LookupRecordFieldType 'Nothing field (Lookup record eot)
+  LookupRecordFieldType 'Nothing field ('Just eot) = Lookup field eot
+  LookupRecordFieldType a b c = TypeError ('Text "Can't find field in record")
 
 type family Consistent eot where
   Consistent (Either eot Eot.Void) = Consistent eot
+
+--------------------------------------------------------------------------------
 
 class GTables mt it | mt -> it, it -> mt where
   gInsert :: mt -> it -> IO ()
@@ -200,12 +219,17 @@ testInsert = insert companyTables $ CompanyTables
   , employers = []
   }
 
+mt :: CompanyTables 'Memory
+mt = CompanyTables undefined undefined
+
+ct :: CompanyTables 'Cannonical
+ct = CompanyTables undefined undefined
+
 testMain :: IO ()
 testMain = do
   personsRef <- newIORef []
   employersRef <- newIORef []
 
-  let mt = CompanyTables undefined undefined
 
   insert mt $ CompanyTables
     { persons = [person, person]
