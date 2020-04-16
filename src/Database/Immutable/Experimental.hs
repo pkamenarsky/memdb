@@ -9,6 +9,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -23,31 +24,44 @@ import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, symbolVal)
 import qualified Generics.Eot as Eot
 
-data R = Unresolved | Resolved
-
 -- TODO: autoincrementing ids
-data Id t = Id t deriving Show
-data ForeignId (c :: R) t name a = ForeignId deriving Show
+
+data RecordId t = RecordId t deriving Show
+
+type family Id (c :: TableMode) t where
+  Id 'Unresolved t = RecordId t
+  Id 'Lookup t = String
+
+data ForeignId (c :: TableMode) t name a = ForeignId deriving Show
 
 data EId = EidInt String Int | EidString String String deriving Show
 
 data Person c = Person
-  { pid :: Id Int                                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
+  { pid :: Id c Int                                                   -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name :: String
   , friend :: Maybe (ForeignId c Int "persons.pid" Person)            -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer :: Maybe (ForeignId c String "employers.owner" Employer) -- could be turned into Maybe ~(Employer Resolved)
-  , pid2 :: Id String
-  } deriving (Show, G.Generic, Record)
+  , pid2 :: Id c String
+  } deriving (G.Generic)
 
--- lookup (pid $ persons db) 4
+deriving instance Show (Person 'Unresolved)
+deriving instance Record (Person 'Unresolved)
+
+lookup :: tables 'Memory -> (tables 'Lookup -> Id 'Lookup t) -> t -> a
+lookup = undefined
+
+-- lookup db (pid . persons) 4
 
 data Employer c = Employer
-  { owner :: Id String
+  { owner :: Id c String
   , address :: String
   , employees :: [ForeignId c Int "persons.pid" Person]  -- could be turned into [~(Person Resolved)]
-  } deriving (Show, G.Generic, Record)
+  } deriving (G.Generic)
 
-data TableMode = Insert | Memory | Cannonical
+deriving instance Show (Employer 'Unresolved)
+deriving instance Record (Employer 'Unresolved)
+
+data TableMode = Unresolved | Lookup | Memory | Cannonical
 
 data InternalTable a = InternalTable
   { itIds :: IORef (M.Map String (M.Map EId Int))
@@ -55,9 +69,10 @@ data InternalTable a = InternalTable
   }
 
 type family Table (c :: TableMode) a where
-  Table 'Insert a = [a 'Unresolved]
+  Table 'Unresolved a = [a 'Unresolved]
   Table 'Memory a = InternalTable (a 'Unresolved)
   Table 'Cannonical a = a 'Unresolved
+  Table 'Lookup a = a 'Lookup
 
 data CompanyTables (c :: TableMode) = CompanyTables
   { persons :: Table c Person
@@ -81,7 +96,7 @@ data DB tables indexes = DB
 type family ExpandRecord record where
   ExpandRecord () = ()
   ExpandRecord (Either fields Eot.Void) = Either (ExpandRecord fields) Eot.Void
-  ExpandRecord (Eot.Named name (Id a), fields) = (Eot.Named name a, ExpandRecord fields)
+  ExpandRecord (Eot.Named name (RecordId a), fields) = (Eot.Named name a, ExpandRecord fields)
   ExpandRecord (Eot.Named name b, fields) = ExpandRecord fields
 
 type family Expand table where
@@ -123,13 +138,13 @@ instance (GTables mt mi, Record a) => GTables (Eot.Named name (InternalTable a),
         _ -> []
 
 class Tables tables where
-  insert :: tables 'Memory -> tables 'Insert -> IO ()
+  insert :: tables 'Memory -> tables 'Unresolved -> IO ()
   default insert
     :: Eot.HasEot (tables 'Memory)
-    => Eot.HasEot (tables 'Insert)
-    => GTables (Eot.Eot (tables 'Memory)) (Eot.Eot (tables 'Insert))
+    => Eot.HasEot (tables 'Unresolved)
+    => GTables (Eot.Eot (tables 'Memory)) (Eot.Eot (tables 'Unresolved))
     => tables 'Memory
-    -> tables 'Insert
+    -> tables 'Unresolved
     -> IO ()
   insert mt mi = gInsert (Eot.toEot mt) (Eot.toEot mi)
 
@@ -147,11 +162,11 @@ instance GRecord a => GRecord (Either a Eot.Void) where
   gGatherIds (Left a) = gGatherIds a
   gGatherIds _ = undefined
 
-instance (GRecord as, KnownSymbol name) => GRecord (Eot.Named name (Id String), as) where
-  gGatherIds (Eot.Named (Id v), as) = EidString (symbolVal (Eot.Proxy :: Eot.Proxy name)) v:gGatherIds as
+instance (GRecord as, KnownSymbol name) => GRecord (Eot.Named name (RecordId String), as) where
+  gGatherIds (Eot.Named (RecordId v), as) = EidString (symbolVal (Eot.Proxy :: Eot.Proxy name)) v:gGatherIds as
 
-instance (GRecord as, KnownSymbol name) => GRecord (Eot.Named name (Id Int), as) where
-  gGatherIds (Eot.Named (Id v), as) = EidInt (symbolVal (Eot.Proxy :: Eot.Proxy name)) v:gGatherIds as
+instance (GRecord as, KnownSymbol name) => GRecord (Eot.Named name (RecordId Int), as) where
+  gGatherIds (Eot.Named (RecordId v), as) = EidInt (symbolVal (Eot.Proxy :: Eot.Proxy name)) v:gGatherIds as
 
 instance {-# OVERLAPPABLE #-} GRecord as => GRecord (a, as) where
   gGatherIds (_, as) = gGatherIds as
@@ -163,11 +178,11 @@ class Record a where
 
 person :: Person 'Unresolved
 person = Person
-  { pid = Id 5
+  { pid = RecordId 5
   , name = "bla"
   , friend = Nothing
   , employer = Nothing
-  , pid2 = Id "yeah"
+  , pid2 = RecordId "yeah"
   }
 
 test :: [EId]
