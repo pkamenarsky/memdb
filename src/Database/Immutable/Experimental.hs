@@ -1,8 +1,8 @@
-{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -44,95 +44,99 @@ import qualified Generics.Eot as Eot
 
 --------------------------------------------------------------------------------
 
+type family Fst (c :: (*, *)) :: * where
+  Fst '(a, b) = a
+
+type family Snd (c :: (*, *)) :: * where
+  Snd '(a, b) = b
+
 -- TODO: autoincrementing ids
+
+data RecordMode = Resolved | Unresolved | LookupId
 
 data RecordId t = RecordId t deriving Show
 
-type family Id (c :: TableMode) t where
-  Id 'Unresolved t = RecordId t
-  Id 'Lookup t = String
+type family Id (tables :: TableMode -> *) (c :: TableMode) t where
+  Id tables 'Cannonical t = RecordId t
+  Id tables 'Unresolved t = RecordId t
+  Id tables 'Lookup t = RecordId t
 
-data ForeignId (c :: TableMode) (table :: Symbol) (field :: Symbol) = ForeignId deriving Show
+data ForeignRecordId = ForeignRecordId deriving Show
+
+type family ForeignId (tables :: TableMode -> *) (c :: TableMode) (table :: Symbol) (field :: Symbol) where
+  ForeignId tables 'Cannonical table field = ForeignRecordId
+  ForeignId tables 'Unresolved table field
+    = LookupFieldType table field (ExpandTables (Eot.Eot (tables 'Cannonical)))
+  ForeignId tables 'Lookup table field
+    = LookupTableType table (ExpandTables (Eot.Eot (tables 'Cannonical)))
 
 data EId = EidInt String Int | EidString String String deriving Show
 
-data Person c = Person
-  { pid :: Id c Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
+data Person tables c = Person
+  { pid :: Id tables c Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name :: String
-  , friend :: Maybe (ForeignId c "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
-  , employer :: Maybe (ForeignId c "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
-  , pid2 :: Id c String
+  , friend :: Maybe (ForeignId tables c "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , employer :: Maybe (ForeignId tables c "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
+  , pid2 :: Id tables c String
   } deriving (G.Generic)
 
-deriving instance Show (Person 'Unresolved)
-deriving instance Record (Person 'Unresolved)
+deriving instance Show (Person CompanyTables 'Unresolved)
+deriving instance Record (Person CompanyTables 'Unresolved)
 
-lookup :: tables 'Memory -> (tables 'Lookup -> Id 'Lookup t) -> t -> a
+lookup :: Id tables 'Lookup t -> t -> tables 'Memory -> a
 lookup = undefined
 
 --------------------------------------------------------------------------------
 
-class  GLookupForeign mtables ctables | mtables -> ctables, ctables -> mtables where
-  gLookupForeign
-    :: 'Just recordType ~ Lookup record (ExpandTables ctables)
-    => mtables
-    -> ForeignId c record field
-    -> recordType
-
-instance ( GLookupForeign mtables ctables
-         , 'Just recordType ~ Lookup record (ExpandTables (Eot.Eot ctables)) 
-         ) =>
-  GLookupForeign (Either mtables Eot.Void) (Either ctables Eot.Void) where
-    gLookupForeign :: Either mtables Eot.Void -> ForeignId c record field -> recordType
-    gLookupForeign (Left mtables) fid = gLookupForeign mtables fid
-
-lookupForeign
-  :: 'Just (recordType, fields) ~ Lookup record (ExpandTables (Eot.Eot (tables 'Cannonical))) -- Look up record type from tables
-  => tables 'Memory
-  -> ForeignId c record field
-  -> recordType
-lookupForeign = undefined
+-- lookupForeign
+--   :: (recordType, fields) ~ Lookup record (ExpandTables (Eot.Eot (tables 'Cannonical))) -- Look up record type from tables
+--   => tables 'Memory
+--   -> ForeignId tables c record field
+--   -> recordType
+-- lookupForeign = undefined
 
 -- lookup db (pid . persons) 4
 
-data Employer c = Employer
-  { owner :: Id c String
+data Employer tables c = Employer
+  { owner :: Id tables c String
   , address :: String
-  , employees :: [ForeignId c "persons" "pid"]  -- could be turned into [~(Person Resolved)]
+  , employees :: [ForeignId tables c "persons" "pid"]  -- could be turned into [~(Person Resolved)]
   } deriving (G.Generic)
 
-deriving instance Show (Employer 'Unresolved)
-deriving instance Record (Employer 'Unresolved)
+deriving instance Show (Employer CompanyTables 'Unresolved)
+deriving instance Record (Employer CompanyTables 'Unresolved)
 
-data TableMode = Unresolved | Lookup | Memory | Cannonical
+data TableMode = Lookup | Memory | Cannonical
 
 data InternalTable a = InternalTable
   { itIds :: IORef (M.Map String (M.Map EId Int))
   , itRecords :: IORef [a]
   }
 
-type family Table (c :: TableMode) a where
-  Table 'Unresolved a = [a 'Unresolved]
-  Table 'Memory a = InternalTable (a 'Unresolved)
-  Table 'Cannonical a = a 'Unresolved
-  Table 'Lookup a = a 'Lookup
+data LookupFn a tables = forall t. LookupFn (RecordId t -> t -> a tables 'Lookup)
+
+type family Table tables (c :: TableMode) a where
+  Table tables 'Unresolved a = [a tables 'Unresolved]
+  Table tables 'Memory a = InternalTable (a tables 'Unresolved)
+  Table tables 'Cannonical a = a tables 'Cannonical
+  Table tables 'Lookup a = LookupFn a tables
 
 data CompanyTables (c :: TableMode) = CompanyTables
-  { persons :: Table c Person
-  , employers :: Table c Employer
+  { persons :: Table CompanyTables c Person
+  , employers :: Table CompanyTables c Employer
   } deriving (G.Generic, Tables)
 
-data Index c t table
+-- data Index c t table
 
-data DBIndexes c = DBIndexes
-  { personFriendCountIndex :: Index c Int Person     -- could be turned into (Person r -> Int)      and (DB ... -> Int -> [Person Resolved])
-  , employerAddressIndex :: Index c String Employer  -- could be turned into (Employer r -> String) and (DB ... -> String -> [Employer Resolved])
-  }
-
-data DB tables indexes = DB
-  { dbTables :: tables 'Memory
-  , dbIndexes :: indexes -- TODO: indexes shouldn't be part of the database; compute separately
-  }
+-- data DBIndexes c = DBIndexes
+--   { personFriendCountIndex :: Index c Int Person     -- could be turned into (Person r -> Int)      and (DB ... -> Int -> [Person Resolved])
+--   , employerAddressIndex :: Index c String Employer  -- could be turned into (Employer r -> String) and (DB ... -> String -> [Employer Resolved])
+--   }
+-- 
+-- data DB tables indexes = DB
+--   { dbTables :: tables 'Memory
+--   , dbIndexes :: indexes -- TODO: indexes shouldn't be part of the database; compute separately
+--   }
 
 --------------------------------------------------------------------------------
 
@@ -146,18 +150,22 @@ type family ExpandRecord (parent :: Symbol) (record :: *) where
 type family ExpandTables table where
   ExpandTables () = ()
   ExpandTables (Either records Eot.Void) = ExpandTables records
-  ExpandTables (Eot.Named name record, records)
-    = ((record, Eot.Named name (ExpandRecord name (Eot.Eot record))), ExpandTables records)
+  -- TODO: this expects a particular table format, e.g. Person table tableMode
+  ExpandTables (Eot.Named name (table tables c), records)
+    = ((table tables 'Lookup, Eot.Named name (ExpandRecord name (Eot.Eot (table tables c)))), ExpandTables records)
 
-type family Lookup (a :: Symbol) (eot :: *) :: (Maybe *) where
+type family Lookup (a :: Symbol) (eot :: *) :: (*, *) where
   Lookup name () = TypeError ('Text "Can't lookup symbol in list")
-  Lookup name (Eot.Named name a, as) = 'Just a
-  Lookup name ((t, Eot.Named name a), as) = 'Just (t, a)
+  Lookup name (Eot.Named name a, as) = '((), a)
+  Lookup name ((t, Eot.Named name a), as) = '(t, a)
   Lookup name (a, as) = Lookup name as
   Lookup name a = TypeError ('Text "Can't lookup symbol in list")
 
-type family Consistent eot where
-  Consistent (Either eot Eot.Void) = Consistent eot
+type family LookupTableType (table :: Symbol) (eot :: *) :: * where
+  LookupTableType table eot = Fst (Lookup table eot)
+
+type family LookupFieldType (table :: Symbol) (field :: Symbol) (eot :: *) :: * where
+  LookupFieldType table field eot = Snd (Lookup field (Snd (Lookup table eot)))
 
 --------------------------------------------------------------------------------
 
@@ -225,11 +233,11 @@ class Record a where
   default gatherIds :: Eot.HasEot a => GRecord (Eot.Eot a) => a -> [EId]
   gatherIds a = gGatherIds (Eot.toEot a)
 
-person :: Person 'Unresolved
+person :: Person CompanyTables 'Unresolved
 person = Person
   { pid = RecordId 5
   , name = "bla"
-  , friend = Nothing
+  , friend = Just 5
   , employer = Nothing
   , pid2 = RecordId "yeah"
   }
