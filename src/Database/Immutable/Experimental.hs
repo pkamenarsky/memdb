@@ -62,14 +62,15 @@ type family Snd a where
 
 data DB = DB (M.Map String (M.Map String (M.Map B.ByteString B.ByteString)))
 
-data RecordMode = Resolved | Unresolved | Done
+data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
 
 data RecordId t = Id t deriving (Show, G.Generic, Serialize)
 
 type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
   Id tables 'Done t = RecordId t
-  Id tables 'Resolved t = t
-  Id tables 'Unresolved t = t
+  Id tables 'Resolved t = RecordId t
+  Id tables 'Unresolved t = RecordId t
+  Id tables ('LookupId table) t = DB -> t -> Maybe (table tables 'Resolved)
 
 data Lazy tables a = Lazy { get :: a tables 'Resolved }
 
@@ -79,6 +80,20 @@ type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Sym
   ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
   ForeignId tables 'Unresolved table field = ForeignRecordId table field (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
+  ForeignId tables ('LookupId table') table field = ()
+
+-- Lookup ----------------------------------------------------------------------
+
+lookupRecord :: Serialize u => Serialize (r tables 'Unresolved) => Resolve (r tables) => DB -> String -> String -> RecordId u -> Maybe (r tables 'Resolved)
+lookupRecord = undefined
+
+class GLookup u r where
+  gLookup :: u -> r
+
+instance (GLookup us rs) => GLookup (Named field (RecordId t), us) (Named field (DB -> t -> Maybe (table tables 'Resolved)), rs) where
+  gLookup (_, us) = (Named $ \db t -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) undefined), gLookup us)
+
+-- Resolve ---------------------------------------------------------------------
 
 resolveField :: Serialize u => Serialize (r tables 'Unresolved) => Resolve (r tables) => DB -> String -> String -> ForeignRecordId table field u -> Lazy tables r
 resolveField db@(DB tables) table field (ForeignId u) = fromJust $ do
@@ -162,13 +177,11 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 data TableMode = Lookup | Memory | Insert | Cannonical
 
-data LookupFn a tables = forall t. LookupFn (RecordId t -> t -> a tables 'Resolved)
-
 type family Table (tables :: TableMode -> *) (c :: TableMode) a where
   Table tables 'Cannonical a = a tables 'Done
 
   Table tables 'Insert a = [a tables 'Unresolved]
-  Table tables 'Lookup a = LookupFn a tables
+  Table tables 'Lookup a = a tables ('LookupId a)
 
 --------------------------------------------------------------------------------
 
@@ -210,3 +223,6 @@ personR = undefined
 
 personR' :: Person CompanyTables 'Resolved
 personR' = resolve undefined personU
+
+personL :: Person CompanyTables ('LookupId Person)
+personL = undefined
