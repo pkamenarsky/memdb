@@ -18,7 +18,7 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Database.Immutable.ExperimentalWishlist where
+module Database.Immutable.ExperimentalWishlist () where
 
 import Data.Proxy
 import GHC.TypeLits
