@@ -56,18 +56,16 @@ data RecordMode = Resolved | Unresolved | LookupId
 
 data RecordId t = RecordId t deriving Show
 
-type family Id (tables :: TableMode -> *) (c :: TableMode) t where
-  Id tables 'Cannonical t = RecordId t
+type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
+  Id tables 'Resolved t = t
   Id tables 'Unresolved t = RecordId t
-  Id tables 'Lookup t = RecordId t
 
 data ForeignRecordId = ForeignRecordId deriving Show
 
-type family ForeignId (tables :: TableMode -> *) (c :: TableMode) (table :: Symbol) (field :: Symbol) where
-  ForeignId tables 'Cannonical table field = ForeignRecordId
+type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Unresolved table field
     = LookupFieldType table field (ExpandTables (Eot.Eot (tables 'Cannonical)))
-  ForeignId tables 'Lookup table field
+  ForeignId tables 'Resolved table field
     = LookupTableType table (ExpandTables (Eot.Eot (tables 'Cannonical)))
 
 data EId = EidInt String Int | EidString String String deriving Show
@@ -83,8 +81,8 @@ data Person tables c = Person
 deriving instance Show (Person CompanyTables 'Unresolved)
 deriving instance Record (Person CompanyTables 'Unresolved)
 
-lookup :: Id tables 'Lookup t -> t -> tables 'Memory -> a
-lookup = undefined
+-- lookup :: Id tables 'LookupId t -> t -> tables 'Memory -> a
+-- lookup = undefined
 
 --------------------------------------------------------------------------------
 
@@ -106,19 +104,19 @@ data Employer tables c = Employer
 deriving instance Show (Employer CompanyTables 'Unresolved)
 deriving instance Record (Employer CompanyTables 'Unresolved)
 
-data TableMode = Lookup | Memory | Cannonical
+data TableMode = Lookup | Memory | Insert | Cannonical
 
 data InternalTable a = InternalTable
   { itIds :: IORef (M.Map String (M.Map EId Int))
   , itRecords :: IORef [a]
   }
 
-data LookupFn a tables = forall t. LookupFn (RecordId t -> t -> a tables 'Lookup)
+data LookupFn a tables = forall t. LookupFn (RecordId t -> t -> a tables 'Resolved)
 
 type family Table tables (c :: TableMode) a where
-  Table tables 'Unresolved a = [a tables 'Unresolved]
   Table tables 'Memory a = InternalTable (a tables 'Unresolved)
-  Table tables 'Cannonical a = a tables 'Cannonical
+  Table tables 'Cannonical a = a tables 'Unresolved
+  Table tables 'Insert a = [a tables 'Unresolved]
   Table tables 'Lookup a = LookupFn a tables
 
 data CompanyTables (c :: TableMode) = CompanyTables
@@ -152,7 +150,7 @@ type family ExpandTables table where
   ExpandTables (Either records Eot.Void) = ExpandTables records
   -- TODO: this expects a particular table format, e.g. Person table tableMode
   ExpandTables (Eot.Named name (table tables c), records)
-    = ((table tables 'Lookup, Eot.Named name (ExpandRecord name (Eot.Eot (table tables c)))), ExpandTables records)
+    = ((table tables 'Resolved, Eot.Named name (ExpandRecord name (Eot.Eot (table tables c)))), ExpandTables records)
 
 type family Lookup (a :: Symbol) (eot :: *) :: (*, *) where
   Lookup name () = TypeError ('Text "Can't lookup symbol in list")
@@ -195,13 +193,13 @@ instance (GTables mt mi, Record a) => GTables (Eot.Named name (InternalTable a),
         _ -> []
 
 class Tables tables where
-  insert :: tables 'Memory -> tables 'Unresolved -> IO ()
+  insert :: tables 'Memory -> tables 'Insert -> IO ()
   default insert
     :: Eot.HasEot (tables 'Memory)
-    => Eot.HasEot (tables 'Unresolved)
-    => GTables (Eot.Eot (tables 'Memory)) (Eot.Eot (tables 'Unresolved))
+    => Eot.HasEot (tables 'Insert)
+    => GTables (Eot.Eot (tables 'Memory)) (Eot.Eot (tables 'Insert))
     => tables 'Memory
-    -> tables 'Unresolved
+    -> tables 'Insert
     -> IO ()
   insert mt mi = gInsert (Eot.toEot mt) (Eot.toEot mi)
 
