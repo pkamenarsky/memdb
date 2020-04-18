@@ -25,7 +25,7 @@ import qualified Data.Map as M
 import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
-import           Generics.Eot (Eot, HasEot, Void, Proxy (..))
+import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
 -- TODO: autoincrementing ids
 -- TODO: record <-> table naming
@@ -56,9 +56,11 @@ type family Snd a where
 
 --------------------------------------------------------------------------------
 
+data DB = DB (M.Map String (M.Map String ()))
+
 data RecordMode = Resolved | Unresolved | LookupId | Done
 
-data RecordId t = RecordId t deriving Show
+data RecordId t = Id t deriving Show
 
 type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
   Id tables 'Done t = RecordId t
@@ -67,14 +69,14 @@ type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
 
 data Lazy tables a = Lazy { get :: a tables 'Resolved }
 
-data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignRecordId { getFid :: t }
+data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId { getFid :: t } deriving Show
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
   ForeignId tables 'Unresolved table field = ForeignRecordId table field (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
 
-resolveField :: String -> String -> a -> b
+resolveField :: Resolve (r tables) => String -> String -> ForeignRecordId table field u -> Lazy tables r
 resolveField = undefined
 
 class GResolve u r where
@@ -87,19 +89,28 @@ instance GResolve u r => GResolve (Either u Void) (Either r Void) where
   gResolve (Left u) = Left $ gResolve u
   gResolve _ = undefined
 
-instance (GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (ForeignRecordId table field u, us) (r, rs) where
-  gResolve (ForeignRecordId u, us) = (resolveField (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u, gResolve us)
+instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
+  gResolve (u, us) = (u, gResolve us)
 
-class Resolve u r where
-  resolve :: u -> r
+instance (Resolve (r tables), GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
+  gResolve (Named u, us) = (Named $ resolveField (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u, gResolve us)
+
+instance (Resolve (r tables), Functor f, GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
+  gResolve (Named u, us) =
+    ( Named $ flip fmap u
+        $ \fid -> resolveField (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
+    , gResolve us
+    )
+
+class Resolve u where
+  resolve :: u 'Unresolved -> u 'Resolved
   default resolve
-    :: HasEot (record tables 'Unresolved)
-    => HasEot (record tables 'Resolved)
-    => GResolve (Eot (record tables 'Unresolved)) (Eot (record tables 'Resolved))
-    => record tables 'Unresolved
-    -> record tables 'Resolved
+    :: HasEot (u 'Unresolved)
+    => HasEot (u 'Resolved)
+    => GResolve (Eot (u 'Unresolved)) (Eot (u 'Resolved))
+    => u 'Unresolved
+    -> u 'Resolved
   resolve = fromEot . gResolve . toEot
-    
 
 -- Map -------------------------------------------------------------------------
 
@@ -158,8 +169,8 @@ data Person tables m = Person
   , pid2 :: Id tables m String
   } deriving (G.Generic)
 
--- can't have tables be ExpandTables (Eot tables) here, since we can't derive Show etc
--- deriving instance Show (Person CompanyTables 'Unresolved)
+deriving instance Show (Person CompanyTables 'Unresolved)
+deriving instance Resolve (Person CompanyTables)
 
 data Employer tables m = Employer
   { owner :: Id tables m String
@@ -167,7 +178,8 @@ data Employer tables m = Employer
   , employees :: [ForeignId tables m "persons" "pid"]  -- could be turned into [~(Person Resolved)]
   } deriving (G.Generic)
 
--- deriving instance Show (Employer CompanyTables 'Unresolved)
+deriving instance Show (Employer CompanyTables 'Unresolved)
+deriving instance Resolve (Employer CompanyTables)
 
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
@@ -181,3 +193,6 @@ personU = undefined
 
 personR :: Person CompanyTables 'Resolved
 personR = undefined
+
+personR' :: Person CompanyTables 'Resolved
+personR' = resolve personU
