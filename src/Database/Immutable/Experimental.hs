@@ -86,42 +86,45 @@ type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Sym
 -- Lookup ----------------------------------------------------------------------
 
 lookupRecord :: Serialize k => Serialize (v tables 'Unresolved) => Resolve tables v => DB -> String -> String -> k -> Maybe (v tables 'Resolved)
-lookupRecord = undefined
+lookupRecord db@(DB tables) table field k = do
+  t <- M.lookup table tables
+  m <- M.lookup field t
+  v <- M.lookup (S.runPut $ S.put k) m
+  case S.runGet S.get v of
+    Left e -> error e
+    Right r -> pure $ resolve db r
 
-class GLookup u r where
-  gLookup :: u -> r
+class GLookup r where
+  gLookup :: r
 
-instance GLookup () () where
-  gLookup () = ()
+instance GLookup () where
+  gLookup = ()
 
-instance GLookup u r => GLookup (Either u Void) (Either r Void) where
-  gLookup (Left u) = Left $ gLookup u
-  gLookup _ = undefined
+instance GLookup r => GLookup (Either r Void) where
+  gLookup = Left gLookup
 
-instance (GLookup us rs) => GLookup (Named x u, us) (Named x r, rs) where
-  gLookup (_, us) = (undefined, gLookup us)
+instance (GLookup rs) => GLookup (Named x r, rs) where
+  gLookup = (undefined, gLookup)
 
-instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve tables table, KnownSymbol field, GLookup us rs) =>
-  GLookup (Named field (RecordId t), us) (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
-    gLookup (_, us) = (Named $ \db k -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) k), gLookup us)
+instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve tables table, KnownSymbol field, GLookup rs) =>
+  GLookup (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
+    gLookup = (Named $ \db k -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) k), gLookup)
 
-class Lookup tables (u :: (TableMode -> *) -> RecordMode -> *) where
-  lookup :: u tables 'Unresolved -> u tables ('LookupId u)
+class Lookup tables (r :: (TableMode -> *) -> RecordMode -> *) where
+  lookup :: r tables ('LookupId r)
   default lookup
-    :: HasEot (u tables 'Unresolved)
-    => HasEot (u tables ('LookupId u))
-    => GLookup (Eot (u tables 'Unresolved)) (Eot (u tables ('LookupId u)))
-    => u tables 'Unresolved
-    -> u tables ('LookupId u)
-  lookup = fromEot . gLookup . toEot
+    :: HasEot (r tables ('LookupId r))
+    => GLookup (Eot (r tables ('LookupId r)))
+    => r tables ('LookupId r)
+  lookup = fromEot gLookup
 
 -- Resolve ---------------------------------------------------------------------
 
 resolveField :: Serialize k => Serialize (v tables 'Unresolved) => Resolve tables v => DB -> String -> String -> ForeignRecordId table field k -> Lazy tables v
-resolveField db@(DB tables) table field (ForeignId u) = fromJust $ do
+resolveField db@(DB tables) table field (ForeignId k) = fromJust $ do
   t <- M.lookup table tables
   m <- M.lookup field t
-  v <- M.lookup (S.runPut $ S.put u) m
+  v <- M.lookup (S.runPut $ S.put k) m
   case S.runGet S.get v of
     Left e -> error e
     Right r -> pure $ Lazy (resolve db r)
