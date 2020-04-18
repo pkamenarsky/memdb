@@ -28,6 +28,7 @@ import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, Void, Proxy)
 
 -- TODO: autoincrementing ids
+-- TODO: record <-> table naming
 
 -- table1
 --  id
@@ -47,10 +48,10 @@ import           Generics.Eot (Eot, Void, Proxy)
 
 --------------------------------------------------------------------------------
 
-type family Fst (c :: (*, *)) :: * where
+type family Fst a where
   Fst '(a, b) = a
 
-type family Snd (c :: (*, *)) :: * where
+type family Snd a where
   Snd '(a, b) = b
 
 --------------------------------------------------------------------------------
@@ -60,14 +61,14 @@ data RecordMode = Resolved | Unresolved | LookupId
 data RecordId t = RecordId t deriving Show
 
 type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
-  Id tables 'Resolved t = RecordId t
+  Id tables 'Resolved t = t
   Id tables 'Unresolved t = RecordId t
 
-data ForeignRecordId = ForeignRecordId deriving Show
+data Lazy tables a = Lazy { resolve :: a tables 'Resolved }
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
-  ForeignId tables 'Unresolved table field = LookupFieldType table field (ExpandTables (Eot (tables 'Cannonical)))
-  ForeignId tables 'Resolved table field = LookupTableType table (ExpandTables (Eot (tables 'Cannonical)))
+  ForeignId tables 'Unresolved table field = LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical))))
+  ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
 
 -- Expand ----------------------------------------------------------------------
 
@@ -85,17 +86,23 @@ type family ExpandTables table where
     = ((record, Eot.Named name (ExpandRecord name (Eot record))), ExpandTables records)
 
 type family Lookup (a :: Symbol) (eot :: *) :: (*, *) where
-  Lookup name () = TypeError ('Text "Can't lookup symbol in list")
+  Lookup name () = TypeError ('Text "Can't lookup symbol in list (())")
   Lookup name (Eot.Named name a, as) = '((), a)
   Lookup name ((t, Eot.Named name a), as) = '(t, a)
   Lookup name (a, as) = Lookup name as
-  Lookup name a = TypeError ('Text "Can't lookup symbol in list")
+  Lookup name a = TypeError ('Text "Can't lookup symbol in list (a)")
 
-type family LookupTableType (table :: Symbol) (eot :: *) :: * where
-  LookupTableType table eot = Fst (Lookup table eot)
+type family LookupTableType (table :: Symbol) (eot :: *) :: (((TableMode -> *) -> RecordMode -> *), *) where
+  LookupTableType name (Either records Eot.Void) = LookupTableType name records
+  LookupTableType name (Eot.Named name (record tables tableMode), records) = '(record, records)
+  LookupTableType name (Eot.Named otherName (record tables tableMode), records) = LookupTableType name records
+  LookupTableType name eot = TypeError ('Text "Can't lookup table type")
 
-type family LookupFieldType (table :: Symbol) (field :: Symbol) (eot :: *) :: * where
-  LookupFieldType table field eot = Snd (Lookup field (Snd (Lookup table eot)))
+type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
+  LookupFieldType name (Either records Eot.Void) = LookupFieldType name records
+  LookupFieldType name (Eot.Named name field, fields) = field
+  LookupFieldType name (Eot.Named otherName field, fields) = LookupFieldType name fields
+  LookupFieldType name eot = TypeError ('Text "Can't lookup field type")
 
 -- Table -----------------------------------------------------------------------
 
@@ -106,7 +113,7 @@ data LookupFn a tables = forall t. LookupFn (RecordId t -> t -> a tables 'Resolv
 data Break a
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) a where
-  Table tables 'Cannonical a = a Break 'Resolved -- break recursion here
+  Table tables 'Cannonical a = a tables 'Resolved -- break recursion here
 
   Table tables 'Insert a = [a tables 'Unresolved]
   Table tables 'Lookup a = LookupFn a tables
