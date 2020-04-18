@@ -32,6 +32,7 @@ import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
 -- TODO: autoincrementing ids
+-- TODO: k, v (instead of u, v)
 -- TODO: record <-> table naming
 
 -- table1
@@ -84,18 +85,39 @@ type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Sym
 
 -- Lookup ----------------------------------------------------------------------
 
-lookupRecord :: Serialize u => Serialize (r tables 'Unresolved) => Resolve (r tables) => DB -> String -> String -> RecordId u -> Maybe (r tables 'Resolved)
+lookupRecord :: Serialize k => Serialize (v tables 'Unresolved) => Resolve (v tables) => DB -> String -> String -> k -> Maybe (v tables 'Resolved)
 lookupRecord = undefined
 
 class GLookup u r where
   gLookup :: u -> r
 
-instance (GLookup us rs) => GLookup (Named field (RecordId t), us) (Named field (DB -> t -> Maybe (table tables 'Resolved)), rs) where
-  gLookup (_, us) = (Named $ \db t -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) undefined), gLookup us)
+instance GLookup () () where
+  gLookup () = ()
+
+instance GLookup u r => GLookup (Either u Void) (Either r Void) where
+  gLookup (Left u) = Left $ gLookup u
+  gLookup _ = undefined
+
+instance (GLookup us rs) => GLookup (Named x u, us) (Named x r, rs) where
+  gLookup (_, us) = (undefined, gLookup us)
+
+instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve (table tables), KnownSymbol field, GLookup us rs) =>
+  GLookup (Named field (RecordId t), us) (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
+    gLookup (_, us) = (Named $ \db k -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) k), gLookup us)
+
+class Lookup tables (u :: (TableMode -> *) -> RecordMode -> *) where
+  lookup :: u tables 'Unresolved -> u tables ('LookupId u)
+  default lookup
+    :: HasEot (u tables 'Unresolved)
+    => HasEot (u tables ('LookupId u))
+    => GLookup (Eot (u tables 'Unresolved)) (Eot (u tables ('LookupId u)))
+    => u tables 'Unresolved
+    -> u tables ('LookupId u)
+  lookup = fromEot . gLookup . toEot
 
 -- Resolve ---------------------------------------------------------------------
 
-resolveField :: Serialize u => Serialize (r tables 'Unresolved) => Resolve (r tables) => DB -> String -> String -> ForeignRecordId table field u -> Lazy tables r
+resolveField :: Serialize k => Serialize (v tables 'Unresolved) => Resolve (v tables) => DB -> String -> String -> ForeignRecordId table field k -> Lazy tables v
 resolveField db@(DB tables) table field (ForeignId u) = fromJust $ do
   t <- M.lookup table tables
   m <- M.lookup field t
@@ -197,6 +219,7 @@ deriving instance Show (Person CompanyTables 'Unresolved)
 -- NOTE: this will not work unless Resolve (Employer CompanyTables) is derived
 deriving instance Serialize (Person CompanyTables 'Unresolved)
 deriving instance Resolve (Person CompanyTables)
+deriving instance Lookup CompanyTables Person
 
 data Employer tables m = Employer
   { owner :: Id tables m String
