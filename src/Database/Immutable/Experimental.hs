@@ -75,6 +75,9 @@ type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
 
 data Lazy tables a = Lazy { get :: a tables 'Resolved }
 
+instance Show (Lazy tables a) where
+  show _ = "Lazy"
+
 data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId { getFid :: t } deriving (Show, G.Generic, Serialize)
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
@@ -186,7 +189,7 @@ class Resolve (tables :: TableMode -> *) u where
     -> u tables 'Resolved
   resolve db = fromEot . gResolve db . toEot
 
--- Insert ----------------------------------------------------------------------
+-- GatherIds -------------------------------------------------------------------
 
 data EId
   = forall t. Serialize t => EId String t
@@ -219,6 +222,49 @@ class GatherIds (tables :: TableMode -> *) u where
     => u tables 'Unresolved
     -> [EId]
   gatherIds = gGatherIds . toEot
+
+-- Insert ----------------------------------------------------------------------
+
+class GInsertTables t where
+  gInsert :: IORef DB -> t -> IO ()
+
+instance GInsertTables () where
+  gInsert _ _ = pure ()
+
+instance GInsertTables t => GInsertTables (Either t Void) where
+  gInsert db (Left t) = gInsert db t
+  gInsert _ _ = undefined
+
+instance (Serialize (r tables 'Unresolved), KnownSymbol table, GatherIds tables r, GInsertTables ts) => GInsertTables (Named table [r tables 'Unresolved], ts) where
+  -- TODO: consistency checks
+  gInsert db (Named records, ts) = do
+    sequence_
+      [ do
+          modifyIORef db $ \(DB tables) -> DB $ M.alter (f field (S.runPut $ S.put t) (S.runPut $ S.put r)) (symbolVal (Proxy :: Proxy table)) tables
+          print $ "TABLE: " <> (symbolVal (Proxy :: Proxy table))
+          print $ "FIELD: " <> field
+          print $ "KEY: " <> show (S.runPut $ S.put t)
+          print $ "VALUE: " <> show (S.runPut $ S.put r)
+      | r <- records
+      , EId field t <- gatherIds r
+      ]
+    gInsert db ts
+    where
+      f field t r Nothing = Just $ M.singleton field (M.singleton t r)
+      f field t r (Just m) = Just $ M.alter (g t r) field m
+
+      g t r Nothing = Just $ M.singleton t r
+      g t r (Just m) = Just $ M.insert t r m
+
+class InsertTables (t :: TableMode -> *) where
+  insert :: IORef DB -> t 'Insert -> IO ()
+  default insert
+    :: HasEot (t 'Insert)
+    => GInsertTables (Eot (t 'Insert))
+    => IORef DB
+    -> t 'Insert
+    -> IO ()
+  insert db = gInsert db . toEot
 
 -- Map -------------------------------------------------------------------------
 
@@ -278,6 +324,7 @@ data Person tables m = Person
   } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
+deriving instance Show (Person CompanyTables 'Resolved)
 deriving instance Serialize (Person CompanyTables 'Unresolved)
 
 data Employer tables m = Employer
@@ -292,12 +339,18 @@ deriving instance Serialize (Employer CompanyTables 'Unresolved)
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic, LookupTables)
+  } deriving (G.Generic, LookupTables, InsertTables)
 
 --------------------------------------------------------------------------------
 
 personU :: Person CompanyTables 'Unresolved
-personU = undefined
+personU = Person
+  { pid = Id 5
+  , name = "bla"
+  , friend = Just $ ForeignId 5 -- own best friend
+  , employer = Nothing
+  , pid2 = Id "pid2"
+  }
 
 personR :: Person CompanyTables 'Resolved
 personR = undefined
@@ -308,5 +361,23 @@ personR' = resolve undefined personU
 personL :: Person CompanyTables ('LookupId Person)
 personL = undefined
 
-companyL :: CompanyTables 'Lookup
-companyL = lookupTables
+companyLookups :: CompanyTables 'Lookup
+companyLookups = lookupTables
+
+companyI :: CompanyTables 'Insert
+companyI = CompanyTables
+  { persons = [personU]
+  , employers = []
+  }
+
+test = do
+  db <- newIORef (DB M.empty)
+  insert db companyI
+
+  dbf <- readIORef db
+
+  let p = (pid $ persons companyLookups) dbf 5
+  let p2 = (pid2 $ persons companyLookups) dbf "pid2"
+
+  print p
+  print p2
