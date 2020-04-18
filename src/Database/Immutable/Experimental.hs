@@ -25,7 +25,7 @@ import qualified Data.Map as M
 import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
-import           Generics.Eot (Eot, Void, Proxy (..))
+import           Generics.Eot (Eot, HasEot, Void, Proxy (..))
 
 -- TODO: autoincrementing ids
 -- TODO: record <-> table naming
@@ -92,7 +92,14 @@ instance (GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (For
 
 class Resolve u r where
   resolve :: u -> r
-  default resolve :: u -> r
+  default resolve
+    :: HasEot (record tables 'Unresolved)
+    => HasEot (record tables 'Resolved)
+    => GResolve (Eot (record tables 'Unresolved)) (Eot (record tables 'Resolved))
+    => record tables 'Unresolved
+    -> record tables 'Resolved
+  resolve = fromEot . gResolve . toEot
+    
 
 -- Map -------------------------------------------------------------------------
 
