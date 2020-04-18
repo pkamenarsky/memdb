@@ -25,7 +25,7 @@ import qualified Data.Map as M
 import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
-import           Generics.Eot (Eot, Void, Proxy)
+import           Generics.Eot (Eot, Void, Proxy (..))
 
 -- TODO: autoincrementing ids
 -- TODO: record <-> table naming
@@ -56,19 +56,54 @@ type family Snd a where
 
 --------------------------------------------------------------------------------
 
-data RecordMode = Resolved | Unresolved | LookupId
+data RecordMode = Resolved | Unresolved | LookupId | Done
 
 data RecordId t = RecordId t deriving Show
 
 type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
+  Id tables 'Done t = RecordId t
   Id tables 'Resolved t = t
-  Id tables 'Unresolved t = RecordId t
+  Id tables 'Unresolved t = t
 
-data Lazy tables a = Lazy { resolve :: a tables 'Resolved }
+data Lazy tables a = Lazy { get :: a tables 'Resolved }
+
+data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignRecordId { getFid :: t }
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
-  ForeignId tables 'Unresolved table field = LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical))))
+  ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
+  ForeignId tables 'Unresolved table field = ForeignRecordId table field (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
+
+resolveField :: String -> String -> a -> b
+resolveField = undefined
+
+class GResolve u r where
+  gResolve :: u -> r
+
+instance GResolve () () where
+  gResolve () = ()
+
+instance GResolve u r => GResolve (Either u Void) (Either r Void) where
+  gResolve (Left u) = Left $ gResolve u
+  gResolve _ = undefined
+
+instance (GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (ForeignRecordId table field u, us) (r, rs) where
+  gResolve (ForeignRecordId u, us) = (resolveField (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u, gResolve us)
+
+class Resolve u r where
+  resolve :: u -> r
+  default resolve :: u -> r
+
+-- Map -------------------------------------------------------------------------
+
+type family IfJust (a :: Maybe *) (b :: *) :: * where
+  IfJust ('Just a) b = a
+  IfJust a b = b
+
+type family MapEot (f :: * -> Maybe b) (eot :: *) :: b where
+  MapEot f () = TypeError ('Text "MapEot: ()")
+  MapEot f (Either a Void) = MapEot f a
+  MapEot f (a, as) = IfJust (f a) (MapEot f as)
 
 -- Expand ----------------------------------------------------------------------
 
@@ -77,25 +112,15 @@ type family ExpandRecord (parent :: Symbol) (record :: *) where
   ExpandRecord parent (Either fields Eot.Void) = ExpandRecord parent fields
   ExpandRecord parent (Eot.Named name (RecordId a), fields)
     = (Eot.Named name a, ExpandRecord parent fields)
-  ExpandRecord parent (Eot.Named name b, fields) = ExpandRecord parent fields
 
-type family ExpandTables table where
-  ExpandTables () = ()
-  ExpandTables (Either records Eot.Void) = ExpandTables records
-  ExpandTables (Eot.Named name record, records)
-    = ((record, Eot.Named name (ExpandRecord name (Eot record))), ExpandTables records)
-
-type family Lookup (a :: Symbol) (eot :: *) :: (*, *) where
-  Lookup name () = TypeError ('Text "Can't lookup symbol in list (())")
-  Lookup name (Eot.Named name a, as) = '((), a)
-  Lookup name ((t, Eot.Named name a), as) = '(t, a)
-  Lookup name (a, as) = Lookup name as
-  Lookup name a = TypeError ('Text "Can't lookup symbol in list (a)")
-
+-- eot :: = Either
+--  (Named "persons" (Person CompanyTables 'Resolved),
+--   (Named "employers" (Employer CompanyTables 'Resolved), ()))
+--  Void
 type family LookupTableType (table :: Symbol) (eot :: *) :: (((TableMode -> *) -> RecordMode -> *), *) where
   LookupTableType name (Either records Eot.Void) = LookupTableType name records
-  LookupTableType name (Eot.Named name (record tables tableMode), records) = '(record, records)
-  LookupTableType name (Eot.Named otherName (record tables tableMode), records) = LookupTableType name records
+  LookupTableType name (Eot.Named name (record tables recordMode), records) = '(record, ExpandRecord name (Eot (record tables 'Done)))
+  LookupTableType name (Eot.Named otherName (record tables recordMode), records) = LookupTableType name records
   LookupTableType name eot = TypeError ('Text "Can't lookup table type")
 
 type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
@@ -110,38 +135,36 @@ data TableMode = Lookup | Memory | Insert | Cannonical
 
 data LookupFn a tables = forall t. LookupFn (RecordId t -> t -> a tables 'Resolved)
 
-data Break a
-
 type family Table (tables :: TableMode -> *) (c :: TableMode) a where
-  Table tables 'Cannonical a = a tables 'Resolved -- break recursion here
+  Table tables 'Cannonical a = a tables 'Done
 
   Table tables 'Insert a = [a tables 'Unresolved]
   Table tables 'Lookup a = LookupFn a tables
 
 --------------------------------------------------------------------------------
 
-data Person tables c = Person
-  { pid :: Id tables c Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
+data Person tables m = Person
+  { pid :: Id tables m Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name :: String
-  , friend :: Maybe (ForeignId tables c "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
-  , employer :: Maybe (ForeignId tables c "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
-  , pid2 :: Id tables c String
+  , friend :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
+  , pid2 :: Id tables m String
   } deriving (G.Generic)
 
 -- can't have tables be ExpandTables (Eot tables) here, since we can't derive Show etc
-deriving instance Show (Person CompanyTables 'Unresolved)
+-- deriving instance Show (Person CompanyTables 'Unresolved)
 
-data Employer tables c = Employer
-  { owner :: Id tables c String
+data Employer tables m = Employer
+  { owner :: Id tables m String
   , address :: String
-  , employees :: [ForeignId tables c "persons" "pid"]  -- could be turned into [~(Person Resolved)]
+  , employees :: [ForeignId tables m "persons" "pid"]  -- could be turned into [~(Person Resolved)]
   } deriving (G.Generic)
 
-deriving instance Show (Employer CompanyTables 'Unresolved)
+-- deriving instance Show (Employer CompanyTables 'Unresolved)
 
-data CompanyTables (c :: TableMode) = CompanyTables
-  { persons :: Table CompanyTables c Person
-  , employers :: Table CompanyTables c Employer
+data CompanyTables m = CompanyTables
+  { persons :: Table CompanyTables m Person
+  , employers :: Table CompanyTables m Employer
   } deriving (G.Generic)
 
 --------------------------------------------------------------------------------
