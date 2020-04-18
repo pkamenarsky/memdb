@@ -56,9 +56,12 @@ type family Snd a where
 
 --------------------------------------------------------------------------------
 
-data DB = DB (M.Map String (M.Map String ()))
+data DB = DB
+  { dbIds :: M.Map String (M.Map String ())
+  , dbTables :: M.Map String (M.Map String ())
+  }
 
-data RecordMode = Resolved | Unresolved | LookupId | Done
+data RecordMode = Resolved | Unresolved | Done
 
 data RecordId t = Id t deriving Show
 
@@ -170,6 +173,7 @@ data Person tables m = Person
   } deriving (G.Generic)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
+-- NOTE: this will not work unless Resolve (Employer CompanyTables) is derived
 deriving instance Resolve (Person CompanyTables)
 
 data Employer tables m = Employer
