@@ -78,7 +78,7 @@ data Lazy tables a = Lazy { get :: a tables 'Resolved }
 data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId { getFid :: t } deriving (Show, G.Generic, Serialize)
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
-  ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
+  -- ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
   ForeignId tables 'Unresolved table field = ForeignRecordId table field (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
   ForeignId tables ('LookupId table') table field = ()
@@ -204,6 +204,8 @@ type family ExpandRecord (parent :: Symbol) (record :: *) where
   ExpandRecord parent (Either fields Eot.Void) = ExpandRecord parent fields
   ExpandRecord parent (Eot.Named name (RecordId a), fields)
     = (Eot.Named name a, ExpandRecord parent fields)
+  ExpandRecord parent (Eot.Named otherName a, fields)
+    = ExpandRecord parent fields
 
 -- eot :: = Either
 --  (Named "persons" (Person CompanyTables 'Resolved),
@@ -223,7 +225,7 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = Lookup | Memory | Insert | Cannonical
+data TableMode = Lookup | Insert | Cannonical
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) a where
   Table tables 'Cannonical a = a tables 'Done
