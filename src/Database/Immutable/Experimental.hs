@@ -83,7 +83,7 @@ type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Sym
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
   ForeignId tables ('LookupId table') table field = ()
 
--- Lookup ----------------------------------------------------------------------
+-- LookupById ------------------------------------------------------------------
 
 lookupRecord :: Serialize k => Serialize (v tables 'Unresolved) => Resolve tables v => DB -> String -> String -> k -> Maybe (v tables 'Resolved)
 lookupRecord db@(DB tables) table field k = do
@@ -94,29 +94,52 @@ lookupRecord db@(DB tables) table field k = do
     Left e -> error e
     Right r -> pure $ resolve db r
 
-class GLookup r where
-  gLookup :: r
+class GLookupById r where
+  gLookupById :: String -> r
 
-instance GLookup () where
-  gLookup = ()
+instance GLookupById () where
+  gLookupById _ = ()
 
-instance GLookup r => GLookup (Either r Void) where
-  gLookup = Left gLookup
+instance GLookupById r => GLookupById (Either r Void) where
+  gLookupById = Left . gLookupById
 
-instance (GLookup rs) => GLookup (Named x r, rs) where
-  gLookup = (undefined, gLookup)
+instance (GLookupById rs) => GLookupById (Named x r, rs) where
+  gLookupById table = (undefined, gLookupById table)
 
-instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve tables table, KnownSymbol field, GLookup rs) =>
-  GLookup (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
-    gLookup = (Named $ \db k -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) k), gLookup)
+instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve tables table, KnownSymbol field, GLookupById rs) =>
+  GLookupById (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
+    gLookupById table = (Named $ \db k -> (lookupRecord db table (symbolVal (Proxy :: Proxy field)) k), gLookupById table)
 
-class Lookup tables (r :: (TableMode -> *) -> RecordMode -> *) where
-  lookup :: r tables ('LookupId r)
-  default lookup
+class LookupById tables (r :: (TableMode -> *) -> RecordMode -> *) where
+  lookupById :: String -> r tables ('LookupId r)
+  default lookupById
     :: HasEot (r tables ('LookupId r))
-    => GLookup (Eot (r tables ('LookupId r)))
-    => r tables ('LookupId r)
-  lookup = fromEot gLookup
+    => GLookupById (Eot (r tables ('LookupId r)))
+    => String
+    -> r tables ('LookupId r)
+  lookupById = fromEot . gLookupById
+
+-- Lookup ----------------------------------------------------------------------
+
+class GLookupTables t where
+  gLookupTables :: t
+
+instance GLookupTables () where
+  gLookupTables = ()
+
+instance GLookupTables t => GLookupTables (Either t Void) where
+  gLookupTables = Left gLookupTables
+
+instance (KnownSymbol name, LookupById tables t, GLookupTables ts) => GLookupTables (Named name (t tables ('LookupId t)), ts) where
+  gLookupTables = (Named $ lookupById (symbolVal (Proxy :: Proxy name)), gLookupTables)
+
+class LookupTables (t :: TableMode -> *) where
+  lookupTables :: t 'Lookup
+  default lookupTables
+    :: HasEot (t 'Lookup)
+    => GLookupTables (Eot (t 'Lookup))
+    => t 'Lookup
+  lookupTables = fromEot gLookupTables
 
 -- Resolve ---------------------------------------------------------------------
 
@@ -216,31 +239,24 @@ data Person tables m = Person
   , friend :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2 :: Id tables m String
-  } deriving (G.Generic)
+  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
--- NOTE: this will not work unless Resolve (Employer CompanyTables) is derived
 deriving instance Serialize (Person CompanyTables 'Unresolved)
-
-deriving instance Resolve CompanyTables Person
-deriving instance Lookup CompanyTables Person
 
 data Employer tables m = Employer
   { owner :: Id tables m String
   , address :: String
   , employees :: [ForeignId tables m "persons" "pid"]  -- could be turned into [~(Person Resolved)]
-  } deriving (G.Generic)
+  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables)
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
 deriving instance Serialize (Employer CompanyTables 'Unresolved)
 
-deriving instance Resolve CompanyTables Employer
-deriving instance Lookup CompanyTables Employer
-
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic)
+  } deriving (G.Generic, LookupTables)
 
 --------------------------------------------------------------------------------
 
@@ -255,3 +271,6 @@ personR' = resolve undefined personU
 
 personL :: Person CompanyTables ('LookupId Person)
 personL = undefined
+
+companyL :: CompanyTables 'Lookup
+companyL = lookupTables
