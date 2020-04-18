@@ -85,7 +85,7 @@ type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Sym
 
 -- Lookup ----------------------------------------------------------------------
 
-lookupRecord :: Serialize k => Serialize (v tables 'Unresolved) => Resolve (v tables) => DB -> String -> String -> k -> Maybe (v tables 'Resolved)
+lookupRecord :: Serialize k => Serialize (v tables 'Unresolved) => Resolve tables v => DB -> String -> String -> k -> Maybe (v tables 'Resolved)
 lookupRecord = undefined
 
 class GLookup u r where
@@ -101,7 +101,7 @@ instance GLookup u r => GLookup (Either u Void) (Either r Void) where
 instance (GLookup us rs) => GLookup (Named x u, us) (Named x r, rs) where
   gLookup (_, us) = (undefined, gLookup us)
 
-instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve (table tables), KnownSymbol field, GLookup us rs) =>
+instance {-# OVERLAPPING #-} (Serialize k, Serialize (table tables 'Unresolved), Resolve tables table, KnownSymbol field, GLookup us rs) =>
   GLookup (Named field (RecordId t), us) (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
     gLookup (_, us) = (Named $ \db k -> (lookupRecord db undefined (symbolVal (Proxy :: Proxy field)) k), gLookup us)
 
@@ -117,7 +117,7 @@ class Lookup tables (u :: (TableMode -> *) -> RecordMode -> *) where
 
 -- Resolve ---------------------------------------------------------------------
 
-resolveField :: Serialize k => Serialize (v tables 'Unresolved) => Resolve (v tables) => DB -> String -> String -> ForeignRecordId table field k -> Lazy tables v
+resolveField :: Serialize k => Serialize (v tables 'Unresolved) => Resolve tables v => DB -> String -> String -> ForeignRecordId table field k -> Lazy tables v
 resolveField db@(DB tables) table field (ForeignId u) = fromJust $ do
   t <- M.lookup table tables
   m <- M.lookup field t
@@ -139,25 +139,25 @@ instance GResolve u r => GResolve (Either u Void) (Either r Void) where
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
   gResolve db (u, us) = (u, gResolve db us)
 
-instance (Serialize u, Serialize (r tables 'Unresolved), Resolve (r tables), GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
+instance (Serialize u, Serialize (r tables 'Unresolved), Resolve tables r, GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
   gResolve db (Named u, us) = (Named $ resolveField db (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u, gResolve db us)
 
-instance (Serialize u, Serialize (r tables 'Unresolved), Resolve (r tables), Functor f, GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
+instance (Serialize u, Serialize (r tables 'Unresolved), Resolve tables r, Functor f, GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
   gResolve db (Named u, us) =
     ( Named $ flip fmap u
         $ \fid -> resolveField db (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
     , gResolve db us
     )
 
-class Resolve u where
-  resolve :: DB -> u 'Unresolved -> u 'Resolved
+class Resolve (tables :: TableMode -> *) u where
+  resolve :: DB -> u tables 'Unresolved -> u tables 'Resolved
   default resolve
-    :: HasEot (u 'Unresolved)
-    => HasEot (u 'Resolved)
-    => GResolve (Eot (u 'Unresolved)) (Eot (u 'Resolved))
+    :: HasEot (u tables 'Unresolved)
+    => HasEot (u tables 'Resolved)
+    => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
     => DB
-    -> u 'Unresolved
-    -> u 'Resolved
+    -> u tables 'Unresolved
+    -> u tables 'Resolved
   resolve db = fromEot . gResolve db . toEot
 
 -- Map -------------------------------------------------------------------------
@@ -218,7 +218,8 @@ data Person tables m = Person
 deriving instance Show (Person CompanyTables 'Unresolved)
 -- NOTE: this will not work unless Resolve (Employer CompanyTables) is derived
 deriving instance Serialize (Person CompanyTables 'Unresolved)
-deriving instance Resolve (Person CompanyTables)
+
+deriving instance Resolve CompanyTables Person
 deriving instance Lookup CompanyTables Person
 
 data Employer tables m = Employer
@@ -229,7 +230,9 @@ data Employer tables m = Employer
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
 deriving instance Serialize (Employer CompanyTables 'Unresolved)
-deriving instance Resolve (Employer CompanyTables)
+
+deriving instance Resolve CompanyTables Employer
+deriving instance Lookup CompanyTables Employer
 
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
