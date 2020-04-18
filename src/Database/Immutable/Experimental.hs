@@ -186,6 +186,40 @@ class Resolve (tables :: TableMode -> *) u where
     -> u tables 'Resolved
   resolve db = fromEot . gResolve db . toEot
 
+-- Insert ----------------------------------------------------------------------
+
+data EId
+  = forall t. Serialize t => EId String t
+  | forall t. Serialize t => EForeignId String String t
+
+class GGatherIds u where
+  gGatherIds :: u -> [EId]
+
+instance GGatherIds () where
+  gGatherIds _ = []
+
+instance GGatherIds u => GGatherIds (Either u Void) where
+  gGatherIds (Left u) = gGatherIds u
+  gGatherIds _ = undefined
+
+instance GGatherIds us => GGatherIds (Named field u, us) where
+  gGatherIds (_, us) = gGatherIds us
+
+instance {-# OVERLAPPING #-} (KnownSymbol field, Serialize t, GGatherIds us) => GGatherIds (Named field (RecordId t), us) where
+  gGatherIds (Named (Id t), us) = EId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+
+instance {-# OVERLAPPING #-} (KnownSymbol table, KnownSymbol field, Serialize t, GGatherIds us) => GGatherIds (Named field' (ForeignRecordId table field t), us) where
+  gGatherIds (Named (ForeignId t), us) = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+
+class GatherIds (tables :: TableMode -> *) u where
+  gatherIds :: u tables 'Unresolved -> [EId]
+  default gatherIds
+    :: HasEot (u tables 'Unresolved)
+    => GGatherIds (Eot (u tables 'Unresolved))
+    => u tables 'Unresolved
+    -> [EId]
+  gatherIds = gGatherIds . toEot
+
 -- Map -------------------------------------------------------------------------
 
 type family IfJust (a :: Maybe *) (b :: *) :: * where
@@ -241,7 +275,7 @@ data Person tables m = Person
   , friend :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2 :: Id tables m String
-  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables)
+  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
 deriving instance Serialize (Person CompanyTables 'Unresolved)
@@ -250,7 +284,7 @@ data Employer tables m = Employer
   { owner :: Id tables m String
   , address :: String
   , employees :: [ForeignId tables m "persons" "pid"]  -- could be turned into [~(Person Resolved)]
-  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables)
+  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
 deriving instance Serialize (Employer CompanyTables 'Unresolved)
