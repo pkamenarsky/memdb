@@ -18,6 +18,10 @@
 
 module Database.Immutable.Experimental where
 
+import qualified Data.ByteString as B
+import           Data.Maybe (fromJust)
+import qualified Data.Serialize as S
+import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
 import           Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import qualified Data.Map as M
@@ -56,14 +60,11 @@ type family Snd a where
 
 --------------------------------------------------------------------------------
 
-data DB = DB
-  { dbIds :: M.Map String (M.Map String ())
-  , dbTables :: M.Map String (M.Map String ())
-  }
+data DB = DB (M.Map String (M.Map String (M.Map B.ByteString B.ByteString)))
 
 data RecordMode = Resolved | Unresolved | Done
 
-data RecordId t = Id t deriving Show
+data RecordId t = Id t deriving (Show, G.Generic, Serialize)
 
 type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
   Id tables 'Done t = RecordId t
@@ -72,48 +73,55 @@ type family Id (tables :: TableMode -> *) (c :: RecordMode) t where
 
 data Lazy tables a = Lazy { get :: a tables 'Resolved }
 
-data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId { getFid :: t } deriving Show
+data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId { getFid :: t } deriving (Show, G.Generic, Serialize)
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
   ForeignId tables 'Unresolved table field = ForeignRecordId table field (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
 
-resolveField :: Resolve (r tables) => String -> String -> ForeignRecordId table field u -> Lazy tables r
-resolveField = undefined
+resolveField :: Serialize u => Serialize (r tables 'Unresolved) => Resolve (r tables) => DB -> String -> String -> ForeignRecordId table field u -> Lazy tables r
+resolveField db@(DB tables) table field (ForeignId u) = fromJust $ do
+  t <- M.lookup table tables
+  m <- M.lookup field t
+  v <- M.lookup (S.runPut $ S.put u) m
+  case S.runGet S.get v of
+    Left e -> error e
+    Right r -> pure $ Lazy (resolve db r)
 
 class GResolve u r where
-  gResolve :: u -> r
+  gResolve :: DB -> u -> r
 
 instance GResolve () () where
-  gResolve () = ()
+  gResolve _ () = ()
 
 instance GResolve u r => GResolve (Either u Void) (Either r Void) where
-  gResolve (Left u) = Left $ gResolve u
-  gResolve _ = undefined
+  gResolve db (Left u) = Left $ gResolve db u
+  gResolve _ _ = undefined
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve (u, us) = (u, gResolve us)
+  gResolve db (u, us) = (u, gResolve db us)
 
-instance (Resolve (r tables), GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-  gResolve (Named u, us) = (Named $ resolveField (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u, gResolve us)
+instance (Serialize u, Serialize (r tables 'Unresolved), Resolve (r tables), GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
+  gResolve db (Named u, us) = (Named $ resolveField db (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u, gResolve db us)
 
-instance (Resolve (r tables), Functor f, GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-  gResolve (Named u, us) =
+instance (Serialize u, Serialize (r tables 'Unresolved), Resolve (r tables), Functor f, GResolve us rs, KnownSymbol table, KnownSymbol field) => GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
+  gResolve db (Named u, us) =
     ( Named $ flip fmap u
-        $ \fid -> resolveField (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
-    , gResolve us
+        $ \fid -> resolveField db (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
+    , gResolve db us
     )
 
 class Resolve u where
-  resolve :: u 'Unresolved -> u 'Resolved
+  resolve :: DB -> u 'Unresolved -> u 'Resolved
   default resolve
     :: HasEot (u 'Unresolved)
     => HasEot (u 'Resolved)
     => GResolve (Eot (u 'Unresolved)) (Eot (u 'Resolved))
-    => u 'Unresolved
+    => DB
+    -> u 'Unresolved
     -> u 'Resolved
-  resolve = fromEot . gResolve . toEot
+  resolve db = fromEot . gResolve db . toEot
 
 -- Map -------------------------------------------------------------------------
 
@@ -174,6 +182,7 @@ data Person tables m = Person
 
 deriving instance Show (Person CompanyTables 'Unresolved)
 -- NOTE: this will not work unless Resolve (Employer CompanyTables) is derived
+deriving instance Serialize (Person CompanyTables 'Unresolved)
 deriving instance Resolve (Person CompanyTables)
 
 data Employer tables m = Employer
@@ -183,6 +192,7 @@ data Employer tables m = Employer
   } deriving (G.Generic)
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
+deriving instance Serialize (Employer CompanyTables 'Unresolved)
 deriving instance Resolve (Employer CompanyTables)
 
 data CompanyTables m = CompanyTables
@@ -199,4 +209,4 @@ personR :: Person CompanyTables 'Resolved
 personR = undefined
 
 personR' :: Person CompanyTables 'Resolved
-personR' = resolve personU
+personR' = resolve undefined personU
