@@ -334,6 +334,7 @@ data Employer tables m = Employer
   } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
+deriving instance Show (Employer CompanyTables 'Resolved)
 deriving instance Serialize (Employer CompanyTables 'Unresolved)
 
 data CompanyTables m = CompanyTables
@@ -348,8 +349,15 @@ personU = Person
   { pid = Id 5
   , name = "bla"
   , friend = Just $ ForeignId 5 -- own best friend
-  , employer = Nothing
+  , employer = Just $ ForeignId "boss"
   , pid2 = Id "pid2"
+  }
+
+employerU :: Employer CompanyTables 'Unresolved
+employerU = Employer
+  { owner = Id "boss"
+  , address = "thug mansion"
+  , employees = [ForeignId 5]
   }
 
 personR :: Person CompanyTables 'Resolved
@@ -367,7 +375,7 @@ companyLookups = lookupTables
 companyI :: CompanyTables 'Insert
 companyI = CompanyTables
   { persons = [personU]
-  , employers = []
+  , employers = [employerU]
   }
 
 test = do
@@ -376,8 +384,9 @@ test = do
 
   dbf <- readIORef db
 
-  let p = (pid $ persons companyLookups) dbf 5
-  let p2 = (pid2 $ persons companyLookups) dbf "pid2"
+  let Just p = (pid $ persons companyLookups) dbf 5
+  let Just p2 = (pid2 $ persons companyLookups) dbf "pid2"
 
   print p
+  print $ fmap (show . get) $ employer p
   print p2
