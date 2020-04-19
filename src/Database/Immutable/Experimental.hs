@@ -70,7 +70,10 @@ type a & f = f a
 
 --------------------------------------------------------------------------------
 
-data DB = DB (M.Map String (M.Map String (M.Map B.ByteString B.ByteString)))
+type TableName = String
+type FieldName = String
+
+data DB = DB (M.Map TableName (M.Map FieldName (M.Map B.ByteString B.ByteString)))
 
 data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
 
@@ -106,6 +109,8 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 
 -- Backend ---------------------------------------------------------------------
 
+type SerializedTable = (TableName, [([(FieldName, B.ByteString)], B.ByteString)])
+
 class Backend backend where
   lookupRecord'
     :: Serialize k
@@ -113,8 +118,8 @@ class Backend backend where
     => Resolve tables v
   
     => backend
-    -> String
-    -> String
+    -> TableName
+    -> FieldName
     -> k
     -> Maybe (v tables 'Resolved)
   resolveField'
@@ -123,14 +128,13 @@ class Backend backend where
     => Resolve tables v
   
     => backend
-    -> String
-    -> String
+    -> TableName
+    -> FieldName
     -> ForeignRecordId table field k
     -> Lazy tables v
   insertRecord'
-    :: String
-    -> ([(String, B.ByteString)], B.ByteString)
-    -> backend
+    :: backend
+    -> [SerializedTable]
     -> IO ()
 
 -- LookupById ------------------------------------------------------------------
@@ -141,8 +145,8 @@ lookupRecord
   => Resolve tables v
 
   => DB
-  -> String
-  -> String
+  -> TableName
+  -> FieldName
   -> k
   -> Maybe (v tables 'Resolved)
 lookupRecord db@(DB tables) table field k = do
@@ -154,7 +158,7 @@ lookupRecord db@(DB tables) table field k = do
     Right r -> pure $ resolve db r
 
 class GLookupById r where
-  gLookupById :: String -> r
+  gLookupById :: TableName -> r
 
 instance GLookupById () where
   gLookupById _ = ()
@@ -181,11 +185,11 @@ instance {-# OVERLAPPING #-}
         )
 
 class LookupById tables (r :: (TableMode -> *) -> RecordMode -> *) where
-  lookupById :: String -> r tables ('LookupId r)
+  lookupById :: TableName -> r tables ('LookupId r)
   default lookupById
     :: HasEot (r tables ('LookupId r))
     => GLookupById (Eot (r tables ('LookupId r)))
-    => String
+    => TableName
     -> r tables ('LookupId r)
   lookupById = fromEot . gLookupById
 
@@ -225,8 +229,8 @@ resolveField
   => Resolve tables v
 
   => DB
-  -> String
-  -> String
+  -> TableName
+  -> FieldName
   -> ForeignRecordId table field k
   -> Lazy tables v
 resolveField db@(DB tables) table field (ForeignId k) = fromJust $ do
@@ -299,8 +303,8 @@ class Resolve (tables :: TableMode -> *) u where
 -- GatherIds -------------------------------------------------------------------
 
 data EId
-  = forall t. Serialize t => EId String t
-  | forall t. Serialize t => EForeignId String String t
+  = forall t. Serialize t => EId FieldName t
+  | forall t. Serialize t => EForeignId TableName FieldName t
 
 class GGatherIds u where
   gGatherIds :: u -> [EId]
@@ -349,14 +353,14 @@ class GatherIds (tables :: TableMode -> *) u where
 -- Insert ----------------------------------------------------------------------
 
 class GInsertTables t where
-  gInsert :: IORef DB -> t -> IO ()
+  gInsert :: Backend db => [SerializedTable] -> db -> t -> IO ()
 
 instance GInsertTables () where
-  gInsert _ _ = pure ()
+  gInsert srs db _ = insertRecord' db srs
 
 instance GInsertTables t => GInsertTables (Either t Void) where
-  gInsert db (Left t) = gInsert db t
-  gInsert _ _ = undefined
+  gInsert srs db (Left t) = gInsert srs db t
+  gInsert _ _ _ = undefined
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -368,40 +372,26 @@ instance
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
     -- TODO: consistency checks
-    gInsert db (Named records, ts) = do
-      let values =
-            [ ( [ (field, S.runPut (S.put t)) | EId field t <- gatherIds r ]
-              , S.runPut (S.put r)
-              )
-            | r <- records
-            ]
-      sequence_
-        [ do
-            modifyIORef db $ \(DB tables) -> DB $ M.alter (f field (S.runPut $ S.put t) (S.runPut $ S.put r)) (symbolVal (Proxy :: Proxy table)) tables
-            print $ "TABLE: " <> (symbolVal (Proxy :: Proxy table))
-            print $ "FIELD: " <> field
-            print $ "KEY: " <> show (S.runPut $ S.put t)
-            print $ "VALUE: " <> show (S.runPut $ S.put r)
-        | r <- records
-        , EId field t <- gatherIds r
-        ]
-      gInsert db ts
+    gInsert srs db (Named records, ts) = do
+      gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db ts
       where
-        f field t r Nothing = Just $ M.singleton field (M.singleton t r)
-        f field t r (Just m) = Just $ M.alter (g t r) field m
-
-        g t r Nothing = Just $ M.singleton t r
-        g t r (Just m) = Just $ M.insert t r m
+      srsTable =
+        [ ( [ (field, S.runPut (S.put t)) | EId field t <- gatherIds r ]
+          , S.runPut (S.put r)
+          )
+        | r <- records
+        ]
 
 class InsertTables (t :: TableMode -> *) where
-  insert :: IORef DB -> t 'Insert -> IO ()
+  insert :: Backend db => db -> t 'Insert -> IO ()
   default insert
-    :: HasEot (t 'Insert)
+    :: Backend db
+    => HasEot (t 'Insert)
     => GInsertTables (Eot (t 'Insert))
-    => IORef DB
+    => db
     -> t 'Insert
     -> IO ()
-  insert db = gInsert db . toEot
+  insert db = gInsert [] db . toEot
 
 -- Map -------------------------------------------------------------------------
 
@@ -519,7 +509,7 @@ companyI = CompanyTables
 
 test = do
   db <- newIORef (DB M.empty)
-  insert db companyI
+  -- insert db companyI
 
   dbf <- readIORef db
 
