@@ -74,7 +74,8 @@ data DB = DB (M.Map String (M.Map String (M.Map B.ByteString B.ByteString)))
 
 data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
 
-data RecordId t = Id t deriving (Show, G.Generic, Serialize)
+data RecordId t = Id t
+  deriving (Show, G.Generic, Serialize)
 
 type family Id (tables :: TableMode -> *) (recordMode :: RecordMode) t where
   Id tables 'Done t = RecordId t
@@ -89,9 +90,7 @@ data Lazy tables a = Lazy
 instance Show (Lazy tables a) where
   show _ = "Lazy"
 
-data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId
-  { getFid :: t
-  }
+data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
   deriving (Show, G.Generic, Serialize)
 
 type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (table :: Symbol) (field :: Symbol) where
@@ -99,10 +98,10 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
   ForeignId tables 'Unresolved table field = ForeignRecordId
     table
     field
-    $ LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical))))
+    (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy
     tables
-    $ Fst (LookupTableType table (Eot (tables 'Cannonical)))
+    (Fst (LookupTableType table (Eot (tables 'Cannonical))))
   ForeignId tables ('LookupId table') table field = ()
 
 -- LookupById ------------------------------------------------------------------
@@ -140,9 +139,11 @@ instance (GLookupById rs) => GLookupById (Named x r, rs) where
 instance {-# OVERLAPPING #-}
   ( Serialize k
   , Serialize (table tables 'Unresolved)
+
   , Resolve tables table
-  , KnownSymbol field
   , GLookupById rs
+
+  , KnownSymbol field
   ) =>
   GLookupById (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
     gLookupById table
@@ -171,9 +172,10 @@ instance GLookupTables t => GLookupTables (Either t Void) where
   gLookupTables = Left gLookupTables
 
 instance
-  ( KnownSymbol name
-  , LookupById tables t
+  ( LookupById tables t
   , GLookupTables ts
+
+  , KnownSymbol name
   ) =>
   GLookupTables (Named name (t tables ('LookupId t)), ts) where
     gLookupTables = (Named $ lookupById (symbolVal (Proxy :: Proxy name)), gLookupTables)
@@ -222,8 +224,10 @@ instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
 instance
   ( Serialize u
   , Serialize (r tables 'Unresolved)
+
   , Resolve tables r
   , GResolve us rs
+
   , KnownSymbol table
   , KnownSymbol field
   ) =>
@@ -236,9 +240,12 @@ instance
 instance
   ( Serialize u
   , Serialize (r tables 'Unresolved)
+
   , Resolve tables r
-  , Functor f
   , GResolve us rs
+
+  , Functor f
+
   , KnownSymbol table
   , KnownSymbol field
   ) =>
@@ -280,18 +287,22 @@ instance GGatherIds us => GGatherIds (Named field u, us) where
   gGatherIds (_, us) = gGatherIds us
 
 instance {-# OVERLAPPING #-}
-  ( KnownSymbol field
-  , Serialize t
+  ( Serialize t
+
   , GGatherIds us
+
+  , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
     gGatherIds (Named (Id t), us) = EId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
 
 instance {-# OVERLAPPING #-}
-  ( KnownSymbol table
-  , KnownSymbol field
-  , Serialize t
+  ( Serialize t
+
   , GGatherIds us
+
+  , KnownSymbol table
+  , KnownSymbol field
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
     gGatherIds (Named (ForeignId t), us)
@@ -320,9 +331,11 @@ instance GInsertTables t => GInsertTables (Either t Void) where
 
 instance
   ( Serialize (r tables 'Unresolved)
-  , KnownSymbol table
+
   , GatherIds tables r
   , GInsertTables ts
+
+  , KnownSymbol table
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
     -- TODO: consistency checks
