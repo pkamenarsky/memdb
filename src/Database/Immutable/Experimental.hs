@@ -81,7 +81,7 @@ instance Show (Lazy tables a) where
 data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId { getFid :: t } deriving (Show, G.Generic, Serialize)
 
 type family ForeignId (tables :: TableMode -> *) (c :: RecordMode) (table :: Symbol) (field :: Symbol) where
-  -- ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
+  ForeignId tables 'Done table field = TypeError ('Text "ForeignId: Done")
   ForeignId tables 'Unresolved table field = ForeignRecordId table field (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
   ForeignId tables 'Resolved table field = Lazy tables (Fst (LookupTableType table (Eot (tables 'Cannonical))))
   ForeignId tables ('LookupId table') table field = ()
@@ -389,4 +389,5 @@ test = do
 
   print p
   print $ fmap (show . get) $ employer p
+  print $ fmap (show . get) $ friend p
   print p2
