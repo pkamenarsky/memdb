@@ -5,6 +5,8 @@ module Database.Immutable.Experimental.LDB
   ( DB
   , open
   , Backend (..)
+
+  , testLDB
   ) where
 
 import           Control.Concurrent
@@ -18,6 +20,8 @@ import           Database.Immutable.Experimental
 import qualified Database.LevelDB.Base as LDB
 
 import           System.IO.Unsafe (unsafePerformIO)
+
+import           Prelude hiding (lookup)
 
 tableSize :: BC.ByteString -> BC.ByteString
 tableSize table = "s:" <> table
@@ -99,3 +103,23 @@ instance Backend DB where
         [ (table, fromIntegral $ length records)
         | (table, records) <- tables
         ]
+
+--------------------------------------------------------------------------------
+
+testLDB = do
+  db <- flip open "test" $ LDB.defaultOptions
+    { LDB.createIfMissing = True
+    }
+
+  insert db companyI
+
+  p <- withSnapshot db (lookupTest db)
+
+  print p
+  pure "DONE"
+  where
+    lookupTest db snapshot = (person, f')
+      where
+        person = lookup (pid $ persons lookups) 5
+        f' = (fmap get . friend) <$> person
+        lookups = lookupTables db snapshot

@@ -38,6 +38,8 @@ library:
   source-dirs: src
   exposed-modules:
   - Database.Immutable
+  - Database.Immutable.Experimental
+  - Database.Immutable.Experimental.LDB
   - Database.Immutable.Read
   - Database.Immutable.Write
   - Multimap.ByteString
