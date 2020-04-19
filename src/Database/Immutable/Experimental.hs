@@ -97,6 +97,7 @@ class Backend backend where
     :: backend
     -> (Snapshot backend -> a)
     -> IO a
+
   lookupRecord
     :: Serialize k
     => Serialize (v tables 'Unresolved)
@@ -109,6 +110,7 @@ class Backend backend where
     -> FieldName
     -> k
     -> Maybe (v tables 'Resolved)
+
   insertTables
     :: backend
     -> [SerializedTable]
