@@ -55,7 +55,7 @@ type FieldName = String
 data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
 
 data RecordId t = Id t
-  deriving (Show, G.Generic, Serialize)
+  deriving (Show, G.Generic, Serialize, NFData)
 
 data LookupFns tables table k = LookupFns
   { lookup :: k -> Maybe (table tables 'Resolved)
@@ -75,7 +75,7 @@ instance Show (Lazy tables a) where
   show _ = "Lazy"
 
 data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
-  deriving (Show, G.Generic, Serialize)
+  deriving (Show, G.Generic, Serialize, NFData)
 
 type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = ()

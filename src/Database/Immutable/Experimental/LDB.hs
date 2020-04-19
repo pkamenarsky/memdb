@@ -123,7 +123,7 @@ testLDB = do
   print p
   pure "DONE"
   where
-    lookupTest db snapshot = (person, f')
+    lookupTest db snapshot = (name <$> person, fmap (fmap name) f')
       where
         person = lookup (pid $ persons lookups) 5
         f' = (fmap get . friend) <$> person
