@@ -8,6 +8,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
@@ -20,7 +21,7 @@
 
 module Database.Immutable.Experimental where
 
-import           Control.DeepSeq (NFData)
+import           Control.DeepSeq (NFData (rnf))
 
 import qualified Data.ByteString as B
 import           Data.Foldable
@@ -30,6 +31,7 @@ import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
 import           Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import qualified Data.Map as M
+import           Data.Word (Word64)
 
 import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
@@ -38,7 +40,8 @@ import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fro
 
 import           Prelude hiding (lookup)
 
--- TODO: absolute/relative ids
+-- DONE: absolute/relative ids
+
 -- TODO: batches
 -- TODO: consistency checks (must be done on insert, want early abort/error reporting)
 -- TODO: record <-> table naming
@@ -59,8 +62,21 @@ type FieldName = String
 
 data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
 
-data RecordId t = Id t
-  deriving (Show, G.Generic, Serialize, NFData)
+data RecordId t where
+  Id :: t -> RecordId t
+  RelativeId :: Word64 -> RecordId Word64
+
+deriving instance Show t => Show (RecordId t)
+
+instance Serialize t => Serialize (RecordId t) where
+  put (Id t) = S.put t
+  put (RelativeId t) = S.put t
+
+  get = Id <$> S.get
+
+instance NFData t => NFData (RecordId t) where
+  rnf (Id t) = rnf t
+  rnf (RelativeId t) = rnf t
 
 data LookupFns tables table k = LookupFns
   { lookup :: k -> Maybe (table tables 'Resolved)
@@ -68,7 +84,7 @@ data LookupFns tables table k = LookupFns
 
 type family Id (tables :: TableMode -> *) (recordMode :: RecordMode) t where
   Id tables 'Done t = RecordId t
-  Id tables 'Resolved t = RecordId t
+  Id tables 'Resolved t = t
   Id tables 'Unresolved t = RecordId t
   Id tables ('LookupId table) t = LookupFns tables table t
 
@@ -79,8 +95,21 @@ data Lazy tables a = Lazy
 instance Show (Lazy tables a) where
   show _ = "Lazy"
 
-data ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
-  deriving (Show, G.Generic, Serialize, NFData)
+data ForeignRecordId (table :: Symbol) (field :: Symbol) t where
+  ForeignId :: t -> ForeignRecordId table field t
+  ForeignRelativeId :: Word64 -> ForeignRecordId table field Word64
+
+deriving instance Show t => Show (ForeignRecordId table field t)
+
+instance Serialize t => Serialize (ForeignRecordId table field t) where
+  put (ForeignId t) = S.put t
+  put (ForeignRelativeId t) = S.put t
+
+  get = ForeignId <$> S.get
+
+instance NFData t => NFData (ForeignRecordId table field t) where
+  rnf (ForeignId t) = rnf t
+  rnf (ForeignRelativeId t) = rnf t
 
 type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = ()
@@ -217,6 +246,10 @@ instance GResolve u r => GResolve (Either u Void) (Either r Void) where
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
   gResolve db snapshot (u, us) = (u, gResolve db snapshot us)
 
+instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
+  gResolve db snapshot (Named (Id u), us) = (Named u, gResolve db snapshot us)
+  gResolve db snapshot (Named (RelativeId u), us) = (Named u, gResolve db snapshot us)
+
 instance
   ( Serialize u
   , Serialize (r tables 'Unresolved)
@@ -269,7 +302,9 @@ class Resolve (tables :: TableMode -> *) u where
 
 data EId
   = forall t. (Serialize t, Show t) => EId FieldName t
+  | ERelativeId FieldName Word64
   | forall t. (Serialize t, Show t) => EForeignId TableName FieldName t
+  | EForeignRelativeId TableName FieldName Word64
 
 deriving instance Show EId
 
@@ -296,6 +331,7 @@ instance {-# OVERLAPPING #-}
   ) =>
   GGatherIds (Named field (RecordId t), us) where
     gGatherIds (Named (Id t), us) = EId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+    gGatherIds (Named (RelativeId t), us) = ERelativeId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -309,6 +345,8 @@ instance {-# OVERLAPPING #-}
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
     gGatherIds (Named (ForeignId t), us)
       = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+    gGatherIds (Named (ForeignRelativeId t), us)
+      = EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -355,20 +393,20 @@ instance
   , KnownSymbol table
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
-    -- TODO: consistency checks
+    -- TODO: consistency checks; keysExist
     gInsert srs db (Named records, ts) = do
       gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db ts
       where
         srsTable = [ (gatherIds r, S.runPut (S.put r)) | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
-  insert :: Backend db => db -> t 'Insert -> IO ()
+  insert :: Backend db => db -> t 'Batch -> IO ()
   default insert
     :: Backend db
-    => HasEot (t 'Insert)
-    => GInsertTables (Eot (t 'Insert))
+    => HasEot (t 'Batch)
+    => GInsertTables (Eot (t 'Batch))
     => db
-    -> t 'Insert
+    -> t 'Batch
     -> IO ()
   insert db = gInsert [] db . toEot
 
@@ -401,12 +439,12 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = Lookup | Insert | Cannonical
+data TableMode = Lookup | Batch | Cannonical
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) a where
   Table tables 'Cannonical a = a tables 'Done
 
-  Table tables 'Insert a = [a tables 'Unresolved]
+  Table tables 'Batch a = [a tables 'Unresolved]
   Table tables 'Lookup a = a tables ('LookupId a)
 
 --------------------------------------------------------------------------------
@@ -415,7 +453,7 @@ data Person tables m = Person
   { name :: String
   , friend :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
-  , pid :: Id tables m Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
+  , pid :: Id tables m Word64
   , pid2 :: Id tables m String
   } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
 
@@ -445,7 +483,7 @@ data CompanyTables m = CompanyTables
 
 personU :: Person CompanyTables 'Unresolved
 personU = Person
-  { pid = Id 5
+  { pid = RelativeId 5
   , name = "bla"
   , friend = Just $ ForeignId 5 -- own best friend
   , employer = Just $ ForeignId "boss"
@@ -473,7 +511,7 @@ personL = undefined
 -- companyLookups :: CompanyTables 'Lookup
 -- companyLookups = lookupTables
 
-companyI :: CompanyTables 'Insert
+companyI :: CompanyTables 'Batch
 companyI = CompanyTables
   { persons = [personU]
   , employers = [employerU]
