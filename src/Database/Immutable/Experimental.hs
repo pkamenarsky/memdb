@@ -35,24 +35,7 @@ import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fro
 import           Prelude hiding (lookup)
 
 -- TODO: autoincrementing ids
--- TODO: k, v (instead of u, v)
 -- TODO: record <-> table naming
-
--- table1
---  id
---  field1
---  field2 --+
---  field3   |
---           |
--- table2    |
---  id <-----+
---  field1
---  field2
---  field3
-
--- Data model
---   tableName ~> idName ~> idValue ~> index
---   tableName ~> [record]
 
 --------------------------------------------------------------------------------
 
@@ -61,15 +44,6 @@ type family Fst a where
 
 type family Snd a where
   Snd '(a, b) = b
-
-infixr 0 $$
-type f $$ a = f a
-
-infixr 1 $
-type f $ a = f a
-
-infixl 1 &
-type a & f = f a
 
 --------------------------------------------------------------------------------
 
@@ -117,12 +91,20 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 type SerializedTable = (TableName, [([EId], B.ByteString)])
 
 class Backend backend where
+  type Snapshot backend
+
+  withSnapshot
+    :: backend
+    -> (Snapshot backend -> a)
+    -> IO a
   lookupRecord
     :: Serialize k
     => Serialize (v tables 'Unresolved)
     => Resolve tables v
   
     => backend
+    -> Snapshot backend
+
     -> TableName
     -> FieldName
     -> k
@@ -133,6 +115,8 @@ class Backend backend where
     => Resolve tables v
   
     => backend
+    -> Snapshot backend
+
     -> TableName
     -> FieldName
     -> ForeignRecordId table field k
@@ -145,16 +129,16 @@ class Backend backend where
 -- LookupById ------------------------------------------------------------------
 
 class GLookupById r where
-  gLookupById :: Backend db => db -> TableName -> r
+  gLookupById :: Backend db => db -> Snapshot db -> TableName -> r
 
 instance GLookupById () where
-  gLookupById _ _ = ()
+  gLookupById _ _ _ = ()
 
 instance GLookupById r => GLookupById (Either r Void) where
-  gLookupById db = Left . gLookupById db
+  gLookupById db snapshot = Left . gLookupById db snapshot
 
 instance (GLookupById rs) => GLookupById (Named x r, rs) where
-  gLookupById db table = (undefined, gLookupById db table)
+  gLookupById db snapshot table = (undefined, gLookupById db snapshot table)
 
 instance {-# OVERLAPPING #-}
   ( Serialize k
@@ -166,34 +150,35 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GLookupById (Named field (LookupFns tables table k), rs) where
-    gLookupById db table
+    gLookupById db snapshot table
       = ( Named $ LookupFns
-            { lookup = \k -> (lookupRecord db table (symbolVal (Proxy :: Proxy field)) k)
+            { lookup = \k -> (lookupRecord db snapshot table (symbolVal (Proxy :: Proxy field)) k)
             }
-        , gLookupById db table
+        , gLookupById db snapshot table
         )
 
 class LookupById tables (r :: (TableMode -> *) -> RecordMode -> *) where
-  lookupById :: Backend db => db -> TableName -> r tables ('LookupId r)
+  lookupById :: Backend db => db -> Snapshot db -> TableName -> r tables ('LookupId r)
   default lookupById
     :: HasEot (r tables ('LookupId r))
     => GLookupById (Eot (r tables ('LookupId r)))
     => Backend db
     => db
+    -> Snapshot db
     -> TableName
     -> r tables ('LookupId r)
-  lookupById db = fromEot . gLookupById db
+  lookupById db snapshot = fromEot . gLookupById db snapshot
 
 -- Lookup ----------------------------------------------------------------------
 
 class GLookupTables t where
-  gLookupTables :: Backend db => db -> t
+  gLookupTables :: Backend db => db -> Snapshot db -> t
 
 instance GLookupTables () where
-  gLookupTables _ = ()
+  gLookupTables _ _ = ()
 
 instance GLookupTables t => GLookupTables (Either t Void) where
-  gLookupTables = Left . gLookupTables
+  gLookupTables db = Left . gLookupTables db
 
 instance
   ( LookupById tables t
@@ -202,32 +187,36 @@ instance
   , KnownSymbol name
   ) =>
   GLookupTables (Named name (t tables ('LookupId t)), ts) where
-    gLookupTables db = (Named $ lookupById db (symbolVal (Proxy :: Proxy name)), gLookupTables db)
+    gLookupTables db snapshot
+      = ( Named $ lookupById db snapshot (symbolVal (Proxy :: Proxy name))
+        , gLookupTables db snapshot
+        )
 
 class LookupTables (t :: TableMode -> *) where
-  lookupTables :: Backend db => db -> t 'Lookup
+  lookupTables :: Backend db => db -> Snapshot db -> t 'Lookup
   default lookupTables
     :: HasEot (t 'Lookup)
     => Backend db
     => GLookupTables (Eot (t 'Lookup))
     => db
+    -> Snapshot db
     -> t 'Lookup
-  lookupTables = fromEot . gLookupTables
+  lookupTables db = fromEot . gLookupTables db
 
 -- Resolve ---------------------------------------------------------------------
 
 class GResolve u r where
-  gResolve :: Backend db => db -> u -> r
+  gResolve :: Backend db => db -> Snapshot db -> u -> r
 
 instance GResolve () () where
-  gResolve _ () = ()
+  gResolve _ _ () = ()
 
 instance GResolve u r => GResolve (Either u Void) (Either r Void) where
-  gResolve db (Left u) = Left $ gResolve db u
-  gResolve _ _ = undefined
+  gResolve db snapshot (Left u) = Left $ gResolve db snapshot u 
+  gResolve _ _ _ = undefined
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve db (u, us) = (u, gResolve db us)
+  gResolve db snapshot (u, us) = (u, gResolve db snapshot us)
 
 instance
   ( Serialize u
@@ -240,9 +229,9 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-    gResolve db (Named u, us)
-      = ( Named $ resolveField db (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u
-        , gResolve db us
+    gResolve db snapshot (Named u, us)
+      = ( Named $ resolveField db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u
+        , gResolve db snapshot us
         )
 
 instance
@@ -258,23 +247,24 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve db (Named u, us) =
+    gResolve db snapshot (Named u, us) =
       ( Named $ flip fmap u
-          $ \fid -> resolveField db (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
-      , gResolve db us
+          $ \fid -> resolveField db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
+      , gResolve db snapshot us
       )
 
 class Resolve (tables :: TableMode -> *) u where
-  resolve :: Backend db => db -> u tables 'Unresolved -> u tables 'Resolved
+  resolve :: Backend db => db -> Snapshot db -> u tables 'Unresolved -> u tables 'Resolved
   default resolve
     :: HasEot (u tables 'Unresolved)
     => HasEot (u tables 'Resolved)
     => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
     => Backend db
     => db
+    -> Snapshot db
     -> u tables 'Unresolved
     -> u tables 'Resolved
-  resolve db = fromEot . gResolve db . toEot
+  resolve db snapshot = fromEot . gResolve db snapshot . toEot
 
 -- GatherIds -------------------------------------------------------------------
 
