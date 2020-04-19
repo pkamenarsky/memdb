@@ -70,6 +70,7 @@ instance Backend DB where
         }
 
   insertTables (DB db lock) tables = do
+    -- TODO: don't read here, store sizes in MVar (db can't be opened multiple times)
     offsets <- withMVar lock $ \_ -> do
       sequence
         [ do

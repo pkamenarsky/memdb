@@ -38,8 +38,11 @@ import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fro
 
 import           Prelude hiding (lookup)
 
--- TODO: autoincrementing ids
+-- TODO: absolute/relative ids
+-- TODO: batches
+-- TODO: consistency checks (must be done on insert, want early abort/error reporting)
 -- TODO: record <-> table naming
+-- TODO: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
 
 --------------------------------------------------------------------------------
 
