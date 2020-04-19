@@ -1,12 +1,13 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
@@ -22,6 +23,7 @@ module Database.Immutable.Experimental where
 import           Control.DeepSeq (NFData)
 
 import qualified Data.ByteString as B
+import           Data.Foldable
 import           Data.Maybe (fromJust)
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
@@ -263,8 +265,10 @@ class Resolve (tables :: TableMode -> *) u where
 -- GatherIds -------------------------------------------------------------------
 
 data EId
-  = forall t. Serialize t => EId FieldName t
-  | forall t. Serialize t => EForeignId TableName FieldName t
+  = forall t. (Serialize t, Show t) => EId FieldName t
+  | forall t. (Serialize t, Show t) => EForeignId TableName FieldName t
+
+deriving instance Show EId
 
 class GGatherIds u where
   gGatherIds :: u -> [EId]
@@ -281,6 +285,7 @@ instance GGatherIds us => GGatherIds (Named field u, us) where
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
+  , Show t
 
   , GGatherIds us
 
@@ -291,6 +296,7 @@ instance {-# OVERLAPPING #-}
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
+  , Show t
 
   , GGatherIds us
 
@@ -300,6 +306,21 @@ instance {-# OVERLAPPING #-}
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
     gGatherIds (Named (ForeignId t), us)
       = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+
+instance {-# OVERLAPPING #-}
+  ( Serialize t
+  , Show t
+
+  , GGatherIds us
+
+  , Foldable f
+
+  , KnownSymbol table
+  , KnownSymbol field
+  ) =>
+  GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
+    gGatherIds (Named f, us)
+      = map (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field))) (toList f) <> gGatherIds us
 
 class GatherIds (tables :: TableMode -> *) u where
   gatherIds :: u tables 'Unresolved -> [EId]
@@ -399,9 +420,12 @@ deriving instance Show (Person CompanyTables 'Unresolved)
 deriving instance Show (Person CompanyTables 'Resolved)
 deriving instance Serialize (Person CompanyTables 'Unresolved)
 
+data MaybeList a = MaybeList [Maybe a]
+  deriving (Functor, Foldable, G.Generic, Serialize, Show)
+
 data Employer tables m = Employer
   { address :: String
-  , employees :: ForeignId tables m "persons" "pid"  -- could be turned into [~(Person Resolved)]
+  , employees :: MaybeList (ForeignId tables m "persons" "pid")  -- could be turned into [~(Person Resolved)]
   , owner :: Id tables m String
   } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
 
@@ -429,8 +453,10 @@ employerU :: Employer CompanyTables 'Unresolved
 employerU = Employer
   { owner = Id "boss"
   , address = "thug mansion"
-  , employees = ForeignId 5
+  , employees = MaybeList [Just $ ForeignId 5]
   }
+
+eids = gatherIds employerU
 
 personR :: Person CompanyTables 'Resolved
 personR = undefined
