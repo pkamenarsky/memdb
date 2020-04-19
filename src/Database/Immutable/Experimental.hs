@@ -114,7 +114,7 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 
 -- Backend ---------------------------------------------------------------------
 
-type SerializedTable = (TableName, [([(FieldName, B.ByteString)], B.ByteString)])
+type SerializedTable = (TableName, [([EId], B.ByteString)])
 
 class Backend backend where
   lookupRecord
@@ -351,12 +351,7 @@ instance
     gInsert srs db (Named records, ts) = do
       gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db ts
       where
-      srsTable =
-        [ ( [ (field, S.runPut (S.put t)) | EId field t <- gatherIds r ]
-          , S.runPut (S.put r)
-          )
-        | r <- records
-        ]
+        srsTable = [ (gatherIds r, S.runPut (S.put r)) | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
   insert :: Backend db => db -> t 'Insert -> IO ()
