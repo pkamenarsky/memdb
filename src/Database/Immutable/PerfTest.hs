@@ -62,7 +62,7 @@ deriving instance S.Serialize (Person4 CompanyTables2 'Unresolved)
 data Person5 tables m = Person5
   { pid5 :: Id tables m Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name5 :: String
-  , friend5 :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , friend5 :: Maybe (ForeignId tables m "persons7" "pid2_7")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer5 :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2_5 :: Id tables m String
   } deriving (G.Generic, Resolve CompanyTables2, LookupById CompanyTables2, GatherIds CompanyTables2)
@@ -98,7 +98,7 @@ deriving instance S.Serialize (Person7 CompanyTables2 'Unresolved)
 data Person8 tables m = Person8
   { pid8 :: Id tables m Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name8 :: String
-  , friend8 :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , friend8 :: Maybe (ForeignId tables m "persons6" "pid6")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer8 :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2_8 :: Id tables m String
   } deriving (G.Generic, Resolve CompanyTables2, LookupById CompanyTables2, GatherIds CompanyTables2)
@@ -110,7 +110,7 @@ deriving instance S.Serialize (Person8 CompanyTables2 'Unresolved)
 data Person9 tables m = Person9
   { pid9 :: Id tables m Int                                     -- could be turned into (CompanyTables Memory -> Int -> ~(Person Resolved))
   , name9 :: String
-  , friend9 :: Maybe (ForeignId tables m "persons" "pid")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
+  , friend9 :: Maybe (ForeignId tables m "persons3" "pid3")       -- could be turned into Maybe ~(Person Resolved); NOTE: must be lazy!
   , employer9 :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid2_9 :: Id tables m String
   } deriving (G.Generic, Resolve CompanyTables2, LookupById CompanyTables2, GatherIds CompanyTables2)
