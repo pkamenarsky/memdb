@@ -121,7 +121,7 @@ class Backend backend where
     -> FieldName
     -> ForeignRecordId table field k
     -> Lazy tables v
-  insertRecord
+  insertTables
     :: backend
     -> [SerializedTable]
     -> IO ()
@@ -322,7 +322,7 @@ class GInsertTables t where
   gInsert :: Backend db => [SerializedTable] -> db -> t -> IO ()
 
 instance GInsertTables () where
-  gInsert srs db _ = insertRecord db srs
+  gInsert srs db _ = insertTables db srs
 
 instance GInsertTables t => GInsertTables (Either t Void) where
   gInsert srs db (Left t) = gInsert srs db t
@@ -353,17 +353,6 @@ class InsertTables (t :: TableMode -> *) where
     -> t 'Insert
     -> IO ()
   insert db = gInsert [] db . toEot
-
--- Map -------------------------------------------------------------------------
-
-type family IfJust (a :: Maybe *) (b :: *) :: * where
-  IfJust ('Just a) b = a
-  IfJust a b = b
-
-type family MapEot (f :: * -> Maybe b) (eot :: *) :: b where
-  MapEot f () = TypeError ('Text "MapEot: ()")
-  MapEot f (Either a Void) = MapEot f a
-  MapEot f (a, as) = IfJust (f a) (MapEot f as)
 
 -- Expand ----------------------------------------------------------------------
 
