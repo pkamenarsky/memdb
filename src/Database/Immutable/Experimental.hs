@@ -10,6 +10,7 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -30,6 +31,8 @@ import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
+
+import           Prelude hiding (lookup)
 
 -- TODO: autoincrementing ids
 -- TODO: k, v (instead of u, v)
@@ -73,18 +76,20 @@ type a & f = f a
 type TableName = String
 type FieldName = String
 
-data DB = DB (M.Map TableName (M.Map FieldName (M.Map B.ByteString B.ByteString)))
-
 data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
 
 data RecordId t = Id t
   deriving (Show, G.Generic, Serialize)
 
+data LookupFns tables table k = LookupFns
+  { lookup :: k -> Maybe (table tables 'Resolved)
+  }
+
 type family Id (tables :: TableMode -> *) (recordMode :: RecordMode) t where
   Id tables 'Done t = RecordId t
   Id tables 'Resolved t = RecordId t
   Id tables 'Unresolved t = RecordId t
-  Id tables ('LookupId table) t = DB -> t -> Maybe (table tables 'Resolved)
+  Id tables ('LookupId table) t = LookupFns tables table t
 
 data Lazy tables a = Lazy
   { get :: a tables 'Resolved
@@ -112,7 +117,7 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 type SerializedTable = (TableName, [([(FieldName, B.ByteString)], B.ByteString)])
 
 class Backend backend where
-  lookupRecord'
+  lookupRecord
     :: Serialize k
     => Serialize (v tables 'Unresolved)
     => Resolve tables v
@@ -122,7 +127,7 @@ class Backend backend where
     -> FieldName
     -> k
     -> Maybe (v tables 'Resolved)
-  resolveField'
+  resolveField
     :: Serialize k
     => Serialize (v tables 'Unresolved)
     => Resolve tables v
@@ -132,42 +137,24 @@ class Backend backend where
     -> FieldName
     -> ForeignRecordId table field k
     -> Lazy tables v
-  insertRecord'
+  insertRecord
     :: backend
     -> [SerializedTable]
     -> IO ()
 
 -- LookupById ------------------------------------------------------------------
 
-lookupRecord
-  :: Serialize k
-  => Serialize (v tables 'Unresolved)
-  => Resolve tables v
-
-  => DB
-  -> TableName
-  -> FieldName
-  -> k
-  -> Maybe (v tables 'Resolved)
-lookupRecord db@(DB tables) table field k = do
-  t <- M.lookup table tables
-  m <- M.lookup field t
-  v <- M.lookup (S.runPut $ S.put k) m
-  case S.runGet S.get v of
-    Left e -> error e
-    Right r -> pure $ resolve db r
-
 class GLookupById r where
-  gLookupById :: TableName -> r
+  gLookupById :: Backend db => db -> TableName -> r
 
 instance GLookupById () where
-  gLookupById _ = ()
+  gLookupById _ _ = ()
 
 instance GLookupById r => GLookupById (Either r Void) where
-  gLookupById = Left . gLookupById
+  gLookupById db = Left . gLookupById db
 
 instance (GLookupById rs) => GLookupById (Named x r, rs) where
-  gLookupById table = (undefined, gLookupById table)
+  gLookupById db table = (undefined, gLookupById db table)
 
 instance {-# OVERLAPPING #-}
   ( Serialize k
@@ -178,31 +165,35 @@ instance {-# OVERLAPPING #-}
 
   , KnownSymbol field
   ) =>
-  GLookupById (Named field (DB -> k -> Maybe (table tables 'Resolved)), rs) where
-    gLookupById table
-      = ( Named $ \db k -> (lookupRecord db table (symbolVal (Proxy :: Proxy field)) k)
-        , gLookupById table
+  GLookupById (Named field (LookupFns tables table k), rs) where
+    gLookupById db table
+      = ( Named $ LookupFns
+            { lookup = \k -> (lookupRecord db table (symbolVal (Proxy :: Proxy field)) k)
+            }
+        , gLookupById db table
         )
 
 class LookupById tables (r :: (TableMode -> *) -> RecordMode -> *) where
-  lookupById :: TableName -> r tables ('LookupId r)
+  lookupById :: Backend db => db -> TableName -> r tables ('LookupId r)
   default lookupById
     :: HasEot (r tables ('LookupId r))
     => GLookupById (Eot (r tables ('LookupId r)))
-    => TableName
+    => Backend db
+    => db
+    -> TableName
     -> r tables ('LookupId r)
-  lookupById = fromEot . gLookupById
+  lookupById db = fromEot . gLookupById db
 
 -- Lookup ----------------------------------------------------------------------
 
 class GLookupTables t where
-  gLookupTables :: t
+  gLookupTables :: Backend db => db -> t
 
 instance GLookupTables () where
-  gLookupTables = ()
+  gLookupTables _ = ()
 
 instance GLookupTables t => GLookupTables (Either t Void) where
-  gLookupTables = Left gLookupTables
+  gLookupTables = Left . gLookupTables
 
 instance
   ( LookupById tables t
@@ -211,38 +202,22 @@ instance
   , KnownSymbol name
   ) =>
   GLookupTables (Named name (t tables ('LookupId t)), ts) where
-    gLookupTables = (Named $ lookupById (symbolVal (Proxy :: Proxy name)), gLookupTables)
+    gLookupTables db = (Named $ lookupById db (symbolVal (Proxy :: Proxy name)), gLookupTables db)
 
 class LookupTables (t :: TableMode -> *) where
-  lookupTables :: t 'Lookup
+  lookupTables :: Backend db => db -> t 'Lookup
   default lookupTables
     :: HasEot (t 'Lookup)
+    => Backend db
     => GLookupTables (Eot (t 'Lookup))
-    => t 'Lookup
-  lookupTables = fromEot gLookupTables
+    => db
+    -> t 'Lookup
+  lookupTables = fromEot . gLookupTables
 
 -- Resolve ---------------------------------------------------------------------
 
-resolveField
-  :: Serialize k
-  => Serialize (v tables 'Unresolved)
-  => Resolve tables v
-
-  => DB
-  -> TableName
-  -> FieldName
-  -> ForeignRecordId table field k
-  -> Lazy tables v
-resolveField db@(DB tables) table field (ForeignId k) = fromJust $ do
-  t <- M.lookup table tables
-  m <- M.lookup field t
-  v <- M.lookup (S.runPut $ S.put k) m
-  case S.runGet S.get v of
-    Left e -> error e
-    Right r -> pure $ Lazy (resolve db r)
-
 class GResolve u r where
-  gResolve :: DB -> u -> r
+  gResolve :: Backend db => db -> u -> r
 
 instance GResolve () () where
   gResolve _ () = ()
@@ -290,12 +265,13 @@ instance
       )
 
 class Resolve (tables :: TableMode -> *) u where
-  resolve :: DB -> u tables 'Unresolved -> u tables 'Resolved
+  resolve :: Backend db => db -> u tables 'Unresolved -> u tables 'Resolved
   default resolve
     :: HasEot (u tables 'Unresolved)
     => HasEot (u tables 'Resolved)
     => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
-    => DB
+    => Backend db
+    => db
     -> u tables 'Unresolved
     -> u tables 'Resolved
   resolve db = fromEot . gResolve db . toEot
@@ -356,7 +332,7 @@ class GInsertTables t where
   gInsert :: Backend db => [SerializedTable] -> db -> t -> IO ()
 
 instance GInsertTables () where
-  gInsert srs db _ = insertRecord' db srs
+  gInsert srs db _ = insertRecord db srs
 
 instance GInsertTables t => GInsertTables (Either t Void) where
   gInsert srs db (Left t) = gInsert srs db t
@@ -492,14 +468,14 @@ employerU = Employer
 personR :: Person CompanyTables 'Resolved
 personR = undefined
 
-personR' :: Person CompanyTables 'Resolved
-personR' = resolve undefined personU
+-- personR' :: Person CompanyTables 'Resolved
+-- personR' = resolve undefined personU
 
 personL :: Person CompanyTables ('LookupId Person)
 personL = undefined
 
-companyLookups :: CompanyTables 'Lookup
-companyLookups = lookupTables
+-- companyLookups :: CompanyTables 'Lookup
+-- companyLookups = lookupTables
 
 companyI :: CompanyTables 'Insert
 companyI = CompanyTables
@@ -507,16 +483,16 @@ companyI = CompanyTables
   , employers = [employerU]
   }
 
-test = do
-  db <- newIORef (DB M.empty)
-  -- insert db companyI
-
-  dbf <- readIORef db
-
-  let Just p = (pid $ persons companyLookups) dbf 5
-  let Just p2 = (pid2 $ persons companyLookups) dbf "pid2"
-
-  print p
-  print $ fmap (show . get) $ employer p
-  print $ fmap (show . get) $ friend p
-  print p2
+-- test = do
+--   db <- newIORef (DB M.empty)
+--   -- insert db companyI
+-- 
+--   dbf <- readIORef db
+-- 
+--   let Just p = (pid $ persons companyLookups) dbf 5
+--   let Just p2 = (pid2 $ persons companyLookups) dbf "pid2"
+-- 
+--   print p
+--   print $ fmap (show . get) $ employer p
+--   print $ fmap (show . get) $ friend p
+--   print p2
