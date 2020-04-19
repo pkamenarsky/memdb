@@ -104,6 +104,35 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
     (Fst (LookupTableType table (Eot (tables 'Cannonical))))
   ForeignId tables ('LookupId table') table field = ()
 
+-- Backend ---------------------------------------------------------------------
+
+class Backend backend where
+  lookupRecord'
+    :: Serialize k
+    => Serialize (v tables 'Unresolved)
+    => Resolve tables v
+  
+    => backend
+    -> String
+    -> String
+    -> k
+    -> Maybe (v tables 'Resolved)
+  resolveField'
+    :: Serialize k
+    => Serialize (v tables 'Unresolved)
+    => Resolve tables v
+  
+    => backend
+    -> String
+    -> String
+    -> ForeignRecordId table field k
+    -> Lazy tables v
+  insertRecord'
+    :: String
+    -> ([(String, B.ByteString)], B.ByteString)
+    -> backend
+    -> IO ()
+
 -- LookupById ------------------------------------------------------------------
 
 lookupRecord
@@ -340,6 +369,12 @@ instance
   GInsertTables (Named table [r tables 'Unresolved], ts) where
     -- TODO: consistency checks
     gInsert db (Named records, ts) = do
+      let values =
+            [ ( [ (field, S.runPut (S.put t)) | EId field t <- gatherIds r ]
+              , S.runPut (S.put r)
+              )
+            | r <- records
+            ]
       sequence_
         [ do
             modifyIORef db $ \(DB tables) -> DB $ M.alter (f field (S.runPut $ S.put t) (S.runPut $ S.put r)) (symbolVal (Proxy :: Proxy table)) tables
