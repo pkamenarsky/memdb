@@ -109,18 +109,6 @@ class Backend backend where
     -> FieldName
     -> k
     -> Maybe (v tables 'Resolved)
-  resolveField
-    :: Serialize k
-    => Serialize (v tables 'Unresolved)
-    => Resolve tables v
-  
-    => backend
-    -> Snapshot backend
-
-    -> TableName
-    -> FieldName
-    -> ForeignRecordId table field k
-    -> Lazy tables v
   insertTables
     :: backend
     -> [SerializedTable]
@@ -229,8 +217,8 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-    gResolve db snapshot (Named u, us)
-      = ( Named $ resolveField db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) u
+    gResolve db snapshot (Named (ForeignId k), us)
+      = ( Named $ Lazy $ fromJust $ lookupRecord db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
         , gResolve db snapshot us
         )
 
@@ -247,9 +235,9 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve db snapshot (Named u, us) =
-      ( Named $ flip fmap u
-          $ \fid -> resolveField db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) fid
+    gResolve db snapshot (Named k', us) =
+      ( Named $ flip fmap k'
+          $ \(ForeignId k) -> Lazy $ fromJust $ lookupRecord db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
       , gResolve db snapshot us
       )
 
