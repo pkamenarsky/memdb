@@ -19,6 +19,8 @@
 
 module Database.Immutable.Experimental where
 
+import           Control.DeepSeq (NFData)
+
 import qualified Data.ByteString as B
 import           Data.Maybe (fromJust)
 import qualified Data.Serialize as S
@@ -93,8 +95,10 @@ type SerializedTable = (TableName, [([EId], B.ByteString)])
 class Backend backend where
   type Snapshot backend
 
+  -- TODO: always force, don't let backend decide
   withSnapshot
-    :: backend
+    :: NFData a
+    => backend
     -> (Snapshot backend -> a)
     -> IO a
 

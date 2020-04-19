@@ -25,6 +25,7 @@ dependencies:
 - bytestring
 - cereal
 - containers
+- deepseq
 - generics-eot
 - leveldb-haskell
 - vector

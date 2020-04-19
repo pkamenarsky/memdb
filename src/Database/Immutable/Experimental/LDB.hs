@@ -9,6 +9,9 @@ module Database.Immutable.Experimental.LDB
   , testLDB
   ) where
 
+import           Control.DeepSeq (force)
+import           Control.Exception (evaluate)
+
 import           Control.Concurrent
 
 import qualified Data.ByteString.Char8 as BC
@@ -46,7 +49,9 @@ open opts path = do
 instance Backend DB where
   type Snapshot DB = LDB.Snapshot
 
-  withSnapshot (DB db _) f = LDB.withSnapshot db (pure . f)
+  withSnapshot (DB db _) f = do
+    a <- LDB.withSnapshot db (pure . f)
+    evaluate (force a)
 
   lookupRecord db'@(DB db _) snapshot table field k = unsafePerformIO $ do
     indexBS <- LDB.get db opts (tableId (BC.pack table) (BC.pack field) (S.runPut (S.put k)))
