@@ -11,10 +11,12 @@ module Database.Immutable.Experimental.LevelDB
 
 import           Control.DeepSeq (force)
 import           Control.Exception (evaluate)
+import           Control.Monad (when)
 
 import           Control.Concurrent
 
 import qualified Data.ByteString.Char8 as BC
+import           Data.ByteString.Char8 (pack)
 import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
 import qualified Data.Map as M
@@ -32,11 +34,14 @@ import           System.IO.Unsafe (unsafePerformIO)
 
 import           Prelude hiding (lookup)
 
+serialize :: S.Serialize a => a -> BC.ByteString
+serialize = S.runPut . S.put
+
 tableSize :: BC.ByteString -> BC.ByteString
 tableSize table = "s:" <> table
 
 tableRecord :: BC.ByteString -> Word64 -> BC.ByteString
-tableRecord table index = "r:" <> table <> ":" <> S.runPut (S.put index)
+tableRecord table index = "r:" <> table <> ":" <> serialize index
 
 tableId :: BC.ByteString -> BC.ByteString -> BC.ByteString -> BC.ByteString
 tableId table field value = "i:" <> table <> ":" <> field <> ":" <> value
@@ -84,11 +89,11 @@ instance Backend DB where
     evaluate (force a)
 
   lookupRecord db'@(DB db _) snapshot table field k = unsafePerformIO $ do
-    indexBS <- LDB.get db opts (tableId (BC.pack table) (BC.pack field) (S.runPut (S.put k)))
+    indexBS <- LDB.get db opts (tableId (pack table) (pack field) (serialize k))
 
     case S.runGet S.get <$> indexBS of
       Just (Right index) -> do
-        recordBS <- LDB.get db opts (tableRecord (BC.pack table) index)
+        recordBS <- LDB.get db opts (tableRecord (pack table) index)
 
         case S.runGet S.get <$> recordBS of
           Just (Right v) -> pure $ Just (resolve db' snapshot v)
@@ -99,12 +104,12 @@ instance Backend DB where
         { LDB.useSnapshot = Just snapshot
         }
 
-  insertTables (DB db lock) opts fids tables = do
+  insertTables (DB db lock) opts missingFids tables = do
     offsets <- modifyMVar lock $ \offsetMap -> do
       (offsets, offsetMap') <- unzip <$> sequence
         [ do
-            LDB.put db writeOpts (tableSize table) (S.runPut $ S.put (offset + count))
-            pure (offset, (table, offset + count))
+            LDB.put db writeOpts (tableSize table) (serialize (offset + count))
+            pure ((offset, count), (table, offset + count))
         | (table, count) <- tableCounts
         , let offset = fromMaybe 0 $ M.lookup table offsetMap
         ]
@@ -115,12 +120,20 @@ instance Backend DB where
 
     sequence_
       [ do
-          LDB.put db writeOpts (tableRecord (BC.pack table) index) record
+          LDB.put db writeOpts (tableRecord (pack table) index) record
+
           sequence
-            [ LDB.put db writeOpts (tableId (BC.pack table) (BC.pack field) k) (S.runPut $ S.put index)
-            | EId' (EId field k) <- eids -- TODO: relative ids
+            [ case eid of
+                EId field k -> LDB.put db writeOpts (tableId (pack table) (pack field) k) (serialize index)
+                ERelativeId field k -> do
+                  -- Relative indexes must always be less than the table batch count
+                  when (k >= count) $ error "insertTables: k >= count"
+
+                  LDB.put db writeOpts (tableId (pack table) (pack field) (serialize (offset + k))) (serialize index)
+                _ -> pure ()
+            | eid <- eids
             ]
-      | ((table, records), offset) <- zip tables offsets
+      | ((table, records), (offset, count)) <- zip tables offsets
       , ((eids, record), index) <- zip records [offset..]
       ]
 
@@ -133,7 +146,7 @@ instance Backend DB where
 
       tableCounts :: [(BC.ByteString, Word64)]
       tableCounts = 
-        [ (BC.pack table, fromIntegral $ length records)
+        [ (pack table, fromIntegral $ length records)
         | (table, records) <- tables
         ]
 
