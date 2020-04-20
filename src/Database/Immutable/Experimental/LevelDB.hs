@@ -111,7 +111,6 @@ instance Backend DB where
       pure (offsetMap <> M.fromList offsetMap', offsets)
 
     -- TODO: check if absolute foreign ids reference existing records in db
-    -- TODO: disallow relative foreign ids not in batch
     -- TODO: check if both absolute and relative ids overwrite anything in db if opts == ErrorOnDuplicates
 
     sequence_

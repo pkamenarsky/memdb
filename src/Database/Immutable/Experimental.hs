@@ -21,6 +21,7 @@
 
 module Database.Immutable.Experimental where
 
+import           Control.Monad (unless)
 import           Control.DeepSeq (NFData (rnf))
 
 import qualified Data.ByteString as B
@@ -159,7 +160,7 @@ class Backend backend where
   insertTables
     :: backend
     -> InsertOptions
-    -> [EId]
+    -> [(TableName, FieldName, B.ByteString)]
     -> [SerializedTable]
     -> IO ()
 
@@ -388,12 +389,16 @@ class GInsertTables t where
 
 instance GInsertTables () where
   gInsert srs db opts _ = do
+
     case opts of
       ErrorOnDuplicates
         | not (null duplicateIds) -> error "gInsert: duplicate ids"
       _ -> pure ()
 
-    insertTables db opts missingFids srs
+    unless (null missingRelFids) $ error "gInsert: missing relative foreign ids"
+
+    insertTables db opts missingAbsFids srs
+
     where
       allEids :: [(TableName, EId)]
       allEids = 
@@ -419,29 +424,22 @@ instance GInsertTables () where
         ]
 
       duplicateIds :: [EId]
-      duplicateIds =
-        [ id
-        | (Sum count, Last id) <- M.elems idsCount
-        , count > 1
-        ]
+      duplicateIds = [ id | (Sum count, Last id) <- M.elems idsCount, count > 1 ]
 
-      fids :: [(EId, (TableName, FieldName, Bool, B.ByteString))]
+      fids :: [(TableName, FieldName, Bool, B.ByteString)]
       fids = mconcat
         [ case eid of
-            fid@(EForeignId table field k) -> [(fid, (table, field, True, S.runPut (S.put k)))]
-            fid@(EForeignRelativeId table field k) -> [(fid, (table, field, False, S.runPut (S.put k)))]
+            EForeignId table field k -> [(table, field, True, S.runPut (S.put k))]
+            EForeignRelativeId table field k -> [(table, field, False, S.runPut (S.put k))]
             _ -> []
         | (_, eid) <- allEids
         ]
 
-      missingFids :: [EId]
-      missingFids =
-        [ fid
-        | (fid, bs) <- fids
-        , not (bs `S.member` idSet)
-        ]
-        where
-          idSet = S.fromList (fmap snd ids)
+      missingFids :: [(TableName, FieldName, Bool, B.ByteString)]
+      missingFids = S.toList $ S.fromList fids `S.difference` S.fromList (fmap snd ids)
+
+      missingAbsFids = [ (table, field, k) | (table, field, True, k) <- missingFids ]
+      missingRelFids = [ fid | fid@(_, _, False, _) <- missingFids ]
 
 instance GInsertTables t => GInsertTables (Either t Void) where
   gInsert srs db opts (Left t) = gInsert srs db opts t
@@ -456,13 +454,19 @@ instance
   , KnownSymbol table
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
-    -- TODO: consistency checks; keysExist
     gInsert srs db opts (Named records, ts) = do
       gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db opts ts
       where
         srsTable = [ (gatherIds r, S.runPut (S.put r)) | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
+  -- | Consistency checks:
+  --
+  -- * All relative foreign ids must point to records inside the batch
+  -- * Absolute foreign ids not pointing to records inside the batch must point to
+  --   records already in the backend
+  -- * When `ErrorOnDuplicates` is specified, no duplicate ids are allowed
+  --   (both in the batch and across the database)
   insert :: Backend db => db -> InsertOptions -> t 'Batch -> IO ()
   default insert
     :: Backend db
