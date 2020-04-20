@@ -125,12 +125,17 @@ instance Backend DB where
 
       pure ((offsetMap', batch + 1), (offsetMap, offsetMap', missingFids, tables, batch))
 
-    anyMissingFid <- not . and <$> sequence
-      [ idExists (pack table) (pack field) value
-      | (table, field, value) <- missingFids
+    missingFidIds <- sequence
+      [ (\x -> (v, x)) <$> idExists (pack table) (pack field) value
+      | v@(table, field, value) <- missingFids
       ]
 
-    when anyMissingFid $ error "Consistency violation: missing foreign ids"
+    anyMissingFid <- not . and . fmap snd <$> sequence
+      [ (\x -> (v, x)) <$> idExists (pack table) (pack field) value
+      | v@(table, field, value) <- missingFids
+      ]
+
+    when (not $ and $ fmap snd missingFidIds) $ error $ "Consistency violation: missing foreign ids: " <> show (map fst $ filter (not . snd) missingFidIds)
 
     case opts of
       ErrorOnDuplicates -> do
