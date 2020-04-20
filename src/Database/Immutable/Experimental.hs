@@ -107,7 +107,7 @@ deriving instance Show t => Show (ForeignRecordId table field t)
 
 instance Serialize t => Serialize (ForeignRecordId table field t) where
   put (ForeignId t) = S.put t
-  put (ForeignRelativeId t) = S.put t
+  put (ForeignRelativeId _) = error "put: ForeignRelativeId"
 
   get = ForeignId <$> S.get
 
@@ -319,17 +319,17 @@ data EId
   deriving Show
 
 class GGatherIds u where
-  gGatherIds :: u -> [EId]
+  gGatherIds :: u -> ([EId], u)
 
 instance GGatherIds () where
-  gGatherIds _ = []
+  gGatherIds () = ([], ())
 
 instance GGatherIds u => GGatherIds (Either u Void) where
-  gGatherIds (Left u) = gGatherIds u
+  gGatherIds (Left u) = Left <$> (gGatherIds u)
   gGatherIds _ = undefined
 
 instance GGatherIds us => GGatherIds (Named field u, us) where
-  gGatherIds (_, us) = gGatherIds us
+  gGatherIds (u, us) = (,) <$> pure u <*> gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -340,8 +340,13 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
-    gGatherIds (Named (Id t), us) = EId (symbolVal (Proxy :: Proxy field)) (S.runPut (S.put t)):gGatherIds us
-    gGatherIds (Named (RelativeId t), us) = ERelativeId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+    gGatherIds (Named (Id t), us) = (EId (symbolVal (Proxy :: Proxy field)) (S.runPut (S.put t)):eids, (Named (Id t), rs))
+      where
+        (eids, rs) = gGatherIds us
+    -- TODO
+    gGatherIds (Named (RelativeId t), us) = (ERelativeId (symbolVal (Proxy :: Proxy field)) t:eids, (Named (Id undefined), rs))
+      where
+        (eids, rs) = gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -354,9 +359,14 @@ instance {-# OVERLAPPING #-}
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
     gGatherIds (Named (ForeignId t), us)
-      = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (S.runPut (S.put t)):gGatherIds us
+      = (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (S.runPut (S.put t)):eids, (Named (ForeignId t), rs))
+      where
+        (eids, rs) = gGatherIds us
+    -- TODO
     gGatherIds (Named (ForeignRelativeId t), us)
-      = EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+      = (EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:eids, (Named (ForeignId undefined), rs))
+      where
+        (eids, rs) = gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -371,16 +381,19 @@ instance {-# OVERLAPPING #-}
   ) =>
   GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
     gGatherIds (Named f, us)
-      = map (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) . S.runPut . S.put) (toList f) <> gGatherIds us
+    -- TODO
+      = undefined -- map (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) . S.runPut . S.put) (toList f) <> gGatherIds us
 
 class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: u tables 'Unresolved -> [EId]
+  gatherIds :: u tables 'Unresolved -> ([EId], u tables 'Unresolved)
   default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
     => u tables 'Unresolved
-    -> [EId]
-  gatherIds = gGatherIds . toEot
+    -> ([EId], u tables 'Unresolved)
+  gatherIds u = (eids, fromEot r)
+    where
+      (eids, r) = gGatherIds (toEot u)
 
 -- Insert ----------------------------------------------------------------------
 
@@ -457,7 +470,7 @@ instance
     gInsert srs db opts (Named records, ts) = do
       gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db opts ts
       where
-        srsTable = [ (gatherIds r, S.runPut (S.put r)) | r <- records ]
+        srsTable = [ S.runPut . S.put <$> gatherIds r | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
   -- | Consistency checks:
