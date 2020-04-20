@@ -119,7 +119,7 @@ instance Backend DB where
         , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
         ]
 
-      let offsetMap' = offsetMap <> M.fromList newOffsets
+      let offsetMap' = M.fromList newOffsets <> offsetMap
 
       LDB.put db writeOpts tableBatch (serialize (batch + 1))
 
