@@ -102,11 +102,14 @@ instance Backend DB where
         [ do
             LDB.put db writeOpts (tableSize table) (S.runPut $ S.put (offset + count))
             pure (offset, (table, offset + count))
-                                                                                      
         | (table, count) <- tableCounts
         , let offset = fromMaybe 0 $ M.lookup table offsetMap
         ]
       pure (offsetMap <> M.fromList offsetMap', offsets)
+
+    -- TODO: check if absolute foreign ids reference existing records in db
+    -- TODO: disallow relative foreign ids not in batch
+    -- TODO: check if both absolute and relative ids overwrite anything in db if opts == ErrorOnDuplicates
 
     sequence_
       [ do

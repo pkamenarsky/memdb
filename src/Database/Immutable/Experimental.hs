@@ -25,7 +25,9 @@ import           Control.DeepSeq (NFData (rnf))
 
 import qualified Data.ByteString as B
 import           Data.Foldable
+import qualified Data.Map as M
 import           Data.Maybe (fromJust)
+import           Data.Semigroup (Sum (Sum), Last (Last))
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
@@ -37,7 +39,7 @@ import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..),
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
-import           Prelude hiding (lookup)
+import           Prelude hiding (id, lookup)
 
 -- DONE: absolute/relative ids
 
@@ -390,6 +392,11 @@ class GInsertTables t where
 
 instance GInsertTables () where
   gInsert srs db opts _ = do
+    case opts of
+      ErrorOnDuplicates
+        | not (null duplicateIds) -> error "gInsert: duplicate ids"
+      _ -> pure ()
+
     insertTables db opts missingFids srs
     where
       allEids :: [(TableName, ERecordId)]
@@ -400,13 +407,26 @@ instance GInsertTables () where
         , eid <- eids
         ]
 
-      ids :: S.Set (TableName, FieldName, Bool, B.ByteString)
-      ids = S.fromList $ mconcat
+      ids :: [(EId, (TableName, FieldName, Bool, B.ByteString))]
+      ids = mconcat
         [ case eid of
-            EId' (EId field k) -> [(table, field, True,  S.runPut (S.put k))]
-            EId' (ERelativeId field k) -> [(table, field, False, S.runPut (S.put k))]
+            EId' id@(EId field k) -> [(id, (table, field, True,  S.runPut (S.put k)))]
+            EId' id@(ERelativeId field k) -> [(id, (table, field, False, S.runPut (S.put k)))]
             _ -> []
         | (table, eid) <- allEids
+        ]
+
+      idsCount :: M.Map (TableName, FieldName, Bool, B.ByteString) (Sum Int, Last EId)
+      idsCount = M.fromListWith (<>)
+        [ (k, (Sum 1, Last id))
+        | (id, k) <- ids
+        ]
+
+      duplicateIds :: [EId]
+      duplicateIds =
+        [ id
+        | (Sum count, Last id) <- M.elems idsCount
+        , count > 1
         ]
 
       fids :: [(EForeignId, (TableName, FieldName, Bool, B.ByteString))]
@@ -422,8 +442,10 @@ instance GInsertTables () where
       missingFids =
         [ fid
         | (fid, bs) <- fids
-        , not (bs `S.member` ids)
+        , not (bs `S.member` idSet)
         ]
+        where
+          idSet = S.fromList (fmap snd ids)
 
 instance GInsertTables t => GInsertTables (Either t Void) where
   gInsert srs db opts (Left t) = gInsert srs db opts t
