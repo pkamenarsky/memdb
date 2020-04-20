@@ -29,13 +29,11 @@ import           Data.Maybe (fromJust)
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
-import           Data.IORef (IORef, modifyIORef, newIORef, readIORef)
-import qualified Data.Map as M
 import qualified Data.Set as S
 import           Data.Word (Word64)
 
 import qualified GHC.Generics as G
-import           GHC.TypeLits (KnownSymbol, AppendSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
+import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
@@ -125,7 +123,11 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 
 -- Backend ---------------------------------------------------------------------
 
-type SerializedTable = (TableName, [([EId], B.ByteString)])
+data InsertOptions
+  = OverwriteDuplicates
+  | ErrorOnDuplicates
+
+type SerializedTable = (TableName, [([ERecordId], B.ByteString)])
 
 class Backend backend where
   type Snapshot backend
@@ -152,6 +154,8 @@ class Backend backend where
 
   insertTables
     :: backend
+    -> InsertOptions
+    -> [EForeignId]
     -> [SerializedTable]
     -> IO ()
 
@@ -266,6 +270,7 @@ instance
       = ( Named $ Lazy $ fromJust $ lookupRecord db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
         , gResolve db snapshot us
         )
+    gResolve _ _ (Named (ForeignRelativeId _), _) = error "gResolve: ForeignRelativeId"
 
 instance
   ( Serialize u
@@ -301,16 +306,21 @@ class Resolve (tables :: TableMode -> *) u where
 
 -- GatherIds -------------------------------------------------------------------
 
-data EId
-  = forall t. (Serialize t, Show t) => EId FieldName t
-  | ERelativeId FieldName Word64
-  | forall t. (Serialize t, Show t) => EForeignId TableName FieldName t
+data EForeignId
+  = EForeignId TableName FieldName B.ByteString
   | EForeignRelativeId TableName FieldName Word64
+  deriving Show
 
-deriving instance Show EId
+data EId
+  = EId FieldName B.ByteString
+  | ERelativeId FieldName Word64
+  deriving Show
+
+data ERecordId = EId' EId | EForeignId' EForeignId
+  deriving Show
 
 class GGatherIds u where
-  gGatherIds :: u -> [EId]
+  gGatherIds :: u -> [ERecordId]
 
 instance GGatherIds () where
   gGatherIds _ = []
@@ -331,8 +341,8 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
-    gGatherIds (Named (Id t), us) = EId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
-    gGatherIds (Named (RelativeId t), us) = ERelativeId (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+    gGatherIds (Named (Id t), us) = EId' (EId (symbolVal (Proxy :: Proxy field)) (S.runPut (S.put t))):gGatherIds us
+    gGatherIds (Named (RelativeId t), us) = EId' (ERelativeId (symbolVal (Proxy :: Proxy field)) t):gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -345,9 +355,9 @@ instance {-# OVERLAPPING #-}
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
     gGatherIds (Named (ForeignId t), us)
-      = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+      = EForeignId' (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (S.runPut (S.put t))):gGatherIds us
     gGatherIds (Named (ForeignRelativeId t), us)
-      = EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:gGatherIds us
+      = EForeignId' (EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t):gGatherIds us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -362,27 +372,27 @@ instance {-# OVERLAPPING #-}
   ) =>
   GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
     gGatherIds (Named f, us)
-      = map (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field))) (toList f) <> gGatherIds us
+      = map (EForeignId' . EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) . S.runPut . S.put) (toList f) <> gGatherIds us
 
 class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: u tables 'Unresolved -> [EId]
+  gatherIds :: u tables 'Unresolved -> [ERecordId]
   default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
     => u tables 'Unresolved
-    -> [EId]
+    -> [ERecordId]
   gatherIds = gGatherIds . toEot
 
 -- Insert ----------------------------------------------------------------------
 
 class GInsertTables t where
-  gInsert :: Backend db => [SerializedTable] -> db -> t -> IO ()
+  gInsert :: Backend db => [SerializedTable] -> db -> InsertOptions -> t -> IO ()
 
 instance GInsertTables () where
-  gInsert srs db _ = do
-    insertTables db srs
+  gInsert srs db opts _ = do
+    insertTables db opts missingFids srs
     where
-      allEids :: [(TableName, EId)]
+      allEids :: [(TableName, ERecordId)]
       allEids = 
         [ (table, eid)
         | (table, records) <- srs
@@ -390,16 +400,34 @@ instance GInsertTables () where
         , eid <- eids
         ]
 
-      ids :: S.Set (TableName, FieldName, B.ByteString)
-      ids  = S.fromList
+      ids :: S.Set (TableName, FieldName, Bool, B.ByteString)
+      ids = S.fromList $ mconcat
         [ case eid of
-            EId field k -> (table, field, S.runPut (S.put k))
+            EId' (EId field k) -> [(table, field, True,  S.runPut (S.put k))]
+            EId' (ERelativeId field k) -> [(table, field, False, S.runPut (S.put k))]
+            _ -> []
         | (table, eid) <- allEids
         ]
 
+      fids :: [(EForeignId, (TableName, FieldName, Bool, B.ByteString))]
+      fids = mconcat
+        [ case eid of
+            EForeignId' fid@(EForeignId table field k) -> [(fid, (table, field, True, S.runPut (S.put k)))]
+            EForeignId' fid@(EForeignRelativeId table field k) -> [(fid, (table, field, False, S.runPut (S.put k)))]
+            _ -> []
+        | (_, eid) <- allEids
+        ]
+
+      missingFids :: [EForeignId]
+      missingFids =
+        [ fid
+        | (fid, bs) <- fids
+        , not (bs `S.member` ids)
+        ]
+
 instance GInsertTables t => GInsertTables (Either t Void) where
-  gInsert srs db (Left t) = gInsert srs db t
-  gInsert _ _ _ = undefined
+  gInsert srs db opts (Left t) = gInsert srs db opts t
+  gInsert _ _ _ _ = undefined
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -411,21 +439,22 @@ instance
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
     -- TODO: consistency checks; keysExist
-    gInsert srs db (Named records, ts) = do
-      gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db ts
+    gInsert srs db opts (Named records, ts) = do
+      gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db opts ts
       where
         srsTable = [ (gatherIds r, S.runPut (S.put r)) | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
-  insert :: Backend db => db -> t 'Batch -> IO ()
+  insert :: Backend db => db -> InsertOptions -> t 'Batch -> IO ()
   default insert
     :: Backend db
     => HasEot (t 'Batch)
     => GInsertTables (Eot (t 'Batch))
     => db
+    -> InsertOptions
     -> t 'Batch
     -> IO ()
-  insert db = gInsert [] db . toEot
+  insert db opts = gInsert [] db opts . toEot
 
 -- Expand ----------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module Database.Immutable.Experimental.LDB
+module Database.Immutable.Experimental.LevelDB
   ( DB
   , open
   , Backend (..)
@@ -69,7 +69,7 @@ instance Backend DB where
         { LDB.useSnapshot = Just snapshot
         }
 
-  insertTables (DB db lock) tables = do
+  insertTables (DB db lock) opts fids tables = do
     -- TODO: don't read here, store sizes in MVar (db can't be opened multiple times)
     offsets <- withMVar lock $ \_ -> do
       sequence
@@ -90,8 +90,8 @@ instance Backend DB where
       [ do
           LDB.put db writeOpts (tableRecord (BC.pack table) index) record
           sequence
-            [ LDB.put db writeOpts (tableId (BC.pack table) (BC.pack field) (S.runPut $ S.put k)) (S.runPut $ S.put index)
-            | EId field k <- eids
+            [ LDB.put db writeOpts (tableId (BC.pack table) (BC.pack field) k) (S.runPut $ S.put index)
+            | EId' (EId field k) <- eids -- TODO: relative ids
             ]
       | ((table, records), offset) <- zip tables offsets
       , ((eids, record), index) <- zip records [offset..]
@@ -117,7 +117,7 @@ testLDB = do
     { LDB.createIfMissing = True
     }
 
-  insert db companyI
+  insert db OverwriteDuplicates companyI
 
   p <- withSnapshot db (lookupTest db)
 
