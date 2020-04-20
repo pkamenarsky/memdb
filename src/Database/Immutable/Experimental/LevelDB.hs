@@ -16,8 +16,8 @@ import           Control.Monad (when)
 import           Control.Concurrent
 
 import qualified Data.ByteString.Char8 as BC
-import           Data.ByteString.Char8 (pack)
-import           Data.Maybe (fromMaybe)
+import           Data.ByteString.Char8 (pack, unpack)
+import           Data.Maybe (fromMaybe, isJust)
 import           Data.Monoid ((<>))
 import qualified Data.Map as M
 import qualified Data.Serialize as S
@@ -34,9 +34,6 @@ import           System.IO.Unsafe (unsafePerformIO)
 
 import           Prelude hiding (lookup)
 
-serialize :: S.Serialize a => a -> BC.ByteString
-serialize = S.runPut . S.put
-
 tableSize :: BC.ByteString -> BC.ByteString
 tableSize table = "s:" <> table
 
@@ -48,7 +45,7 @@ tableId table field value = "i:" <> table <> ":" <> field <> ":" <> value
 
 data DB = DB
   { _dbLevelDB :: LDB.DB
-  , _dbOffsets :: MVar (M.Map BC.ByteString Word64)
+  , _dbOffsets :: MVar OffsetMap
   }
 
 startsWith :: LDB.DB -> BC.ByteString -> IO [LDB.Entry]
@@ -69,7 +66,7 @@ withDB opts path f = LDB.withDB path opts $ \db -> do
 
   offsetMap <- case sizeMap "s:" offsetsBS of
     Left e -> error e
-    Right m -> newMVar (M.fromList m)
+    Right kvs -> newMVar $ M.fromList [ (unpack k, v) | (k, v) <- kvs ]
 
   f (DB db offsetMap)
 
@@ -99,24 +96,50 @@ instance Backend DB where
           Just (Right v) -> pure $ Just (resolve db' snapshot v)
           _ -> pure Nothing
       _ -> pure Nothing
+
     where
       opts = LDB.defaultReadOptions
         { LDB.useSnapshot = Just snapshot
         }
 
-  insertTables (DB db lock) opts missingFids tables = do
-    offsets <- modifyMVar lock $ \offsetMap -> do
-      (offsets, offsetMap') <- unzip <$> sequence
+  insertTables (DB db lock) opts f = do
+    (offsetMap, offsetMap', missingFids, tables) <- modifyMVar lock $ \offsetMap -> do
+      let (missingFids, tables) = f offsetMap
+
+      newOffsets <- sequence
         [ do
             LDB.put db writeOpts (tableSize table) (serialize (offset + count))
-            pure ((offset, count), (table, offset + count))
-        | (table, count) <- tableCounts
-        , let offset = fromMaybe 0 $ M.lookup table offsetMap
+            pure (unpack table, offset + count)
+        | (table, count) <- tableCounts tables
+        , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
         ]
-      pure (offsetMap <> M.fromList offsetMap', offsets)
 
-    -- TODO: check if absolute foreign ids reference existing records in db
-    -- TODO: check if both absolute and relative ids overwrite anything in db if opts == ErrorOnDuplicates
+      let offsetMap' = offsetMap <> M.fromList newOffsets
+
+      pure (offsetMap', (offsetMap, offsetMap', missingFids, tables))
+
+    anyMissingFid <- not . and <$> sequence
+      [ idExists (pack table) (pack field) value
+      | (table, field, value) <- missingFids
+      ]
+
+    when anyMissingFid $ error "Consistency violation: missing foreign ids"
+
+    case opts of
+      ErrorOnDuplicates -> do
+        anyDuplicateId <- or <$> sequence
+          [ case eid of
+              EId field value -> idExists (pack table) (pack field) value
+              EAbsolutizedId field value -> idExists (pack table) (pack field) (serialize value)
+              _ -> pure True
+
+          | (table, records) <- tables
+          , (eids, _) <- records
+          , eid <- eids
+          ]
+
+        when anyDuplicateId $ error "Consistency violation: duplicate ids"
+      _ -> pure ()
 
     sequence_
       [ do
@@ -125,27 +148,31 @@ instance Backend DB where
           sequence
             [ case eid of
                 EId field k -> LDB.put db writeOpts (tableId (pack table) (pack field) k) (serialize index)
-                ERelativeId field k -> do
-                  -- Relative indexes must always be less than the table batch count
-                  when (k >= count) $ error "insertTables: k >= count"
+                EAbsolutizedId field k -> do
+
+                  when (k >= final) $ error "Consistency violation: relative id out of bounds"
 
                   LDB.put db writeOpts (tableId (pack table) (pack field) (serialize (offset + k))) (serialize index)
                 _ -> pure ()
             | eid <- eids
             ]
-      | ((table, records), (offset, count)) <- zip tables offsets
+      | (table, records) <- tables
+      , Just offset <- [ M.lookup table offsetMap ]
+      , Just final <- [ M.lookup table offsetMap' ]
       , ((eids, record), index) <- zip records [offset..]
       ]
 
     where
-      writeOpts = LDB.defaultWriteOptions
+      idExists :: BC.ByteString -> BC.ByteString -> BC.ByteString -> IO Bool
+      idExists table field value = isJust <$> LDB.get db readOpts (tableId table field value)
 
+      writeOpts = LDB.defaultWriteOptions
       readOpts = LDB.defaultReadOptions
         { LDB.useSnapshot = Nothing
         }
 
-      tableCounts :: [(BC.ByteString, Word64)]
-      tableCounts = 
+      tableCounts :: [SerializedTable] -> [(BC.ByteString, Word64)]
+      tableCounts tables = 
         [ (pack table, fromIntegral $ length records)
         | (table, records) <- tables
         ]

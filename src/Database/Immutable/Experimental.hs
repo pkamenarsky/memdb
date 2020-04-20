@@ -43,8 +43,8 @@ import           Prelude hiding (id, lookup)
 
 -- DONE: absolute/relative ids
 -- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
+-- DONE: consistency checks (must be done on insert, want early abort/error reporting)
 
--- TODO: consistency checks (must be done on insert, want early abort/error reporting)
 -- TODO: batches
 
 -- TODO: error -> MonadError
@@ -330,11 +330,15 @@ absolutizeId
   -> (EId, RecordId t)
 absolutizeId _ table (Id t) = (EId table (serialize t), Id t)
 absolutizeId offsets table (RelativeId t)
-  = ( ERelativeId table t
-    , case M.lookup table offsets of
-        Just offset -> Id (offset + t)
-        Nothing -> Id t -- TODO: good?
-    )
+  = case M.lookup table offsets of
+      Just offset -> 
+        ( EAbsolutizedId table (offset + t)
+        , Id (offset + t)
+        )
+      Nothing -> 
+        ( EAbsolutizedId table t
+        , Id t
+        )
 
 absolutizeForeignId
   :: forall table field t. Serialize t
@@ -349,17 +353,21 @@ absolutizeForeignId _ (ForeignId t)
     , ForeignId t
     )
 absolutizeForeignId offsets (ForeignRelativeId t)
-  = ( EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t
-    , case M.lookup (symbolVal (Proxy :: Proxy table)) offsets of
-        Just offset -> ForeignId (offset + t)
-        Nothing -> ForeignId t -- TODO: good?
-    )
+  = case M.lookup (symbolVal (Proxy :: Proxy table)) offsets of
+      Just offset ->
+        ( EForeignAbsolutizedId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (offset + t)
+        , ForeignId (offset + t)
+        )
+      Nothing ->
+        ( EForeignAbsolutizedId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t
+        , ForeignId t
+        )
 
 data EId
   = EId FieldName B.ByteString
-  | ERelativeId FieldName Word64
+  | EAbsolutizedId FieldName Word64
   | EForeignId TableName FieldName B.ByteString
-  | EForeignRelativeId TableName FieldName Word64
+  | EForeignAbsolutizedId TableName FieldName Word64
   deriving Show
 
 class GGatherIds u where
@@ -467,7 +475,7 @@ instance GInsertTables () where
       ids = mconcat
         [ case eid of
             id@(EId field k) -> [(id, (table, field, True, serialize k))]
-            id@(ERelativeId field k) -> [(id, (table, field, False, serialize k))]
+            id@(EAbsolutizedId field k) -> [(id, (table, field, False, serialize k))]
             _ -> []
         | (table, eid) <- allEids
         ]
@@ -485,7 +493,7 @@ instance GInsertTables () where
       fids = mconcat
         [ case eid of
             EForeignId table field k -> [(table, field, True, serialize k)]
-            EForeignRelativeId table field k -> [(table, field, False, serialize k)]
+            EForeignAbsolutizedId table field k -> [(table, field, False, serialize k)]
             _ -> []
         | (_, eid) <- allEids
         ]
