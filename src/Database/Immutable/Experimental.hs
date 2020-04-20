@@ -77,7 +77,7 @@ deriving instance Show t => Show (RecordId t)
 
 instance Serialize t => Serialize (RecordId t) where
   put (Id t) = S.put t
-  put (RelativeId t) = S.put t
+  put (RelativeId _) = error "put: RelativeId"
 
   get = Id <$> S.get
 
@@ -314,6 +314,36 @@ class Resolve (tables :: TableMode -> *) u where
 
 -- GatherIds -------------------------------------------------------------------
 
+type OffsetMap = M.Map String Word64
+
+absolutizeId
+  :: Serialize t
+
+  => String
+  -> RecordId t
+  -> (EId, RecordId t)
+absolutizeId table (Id t) = (EId table (serialize t), Id t)
+absolutizeId table (RelativeId t)
+  = ( ERelativeId table t
+    , Id undefined -- TODO
+    )
+
+absolutizeForeignId
+  :: forall table field t. Serialize t
+  => KnownSymbol table
+  => KnownSymbol field
+
+  => ForeignRecordId table field t
+  -> (EId, ForeignRecordId table field t)
+absolutizeForeignId (ForeignId t)
+  = ( EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (serialize t)
+    , ForeignId t
+    )
+absolutizeForeignId (ForeignRelativeId t)
+  = ( EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t
+    , ForeignId undefined -- TODO
+    )
+
 data EId
   = EId FieldName B.ByteString
   | ERelativeId FieldName Word64
@@ -322,17 +352,17 @@ data EId
   deriving Show
 
 class GGatherIds u where
-  gGatherIds :: u -> ([EId], u)
+  gGatherIds :: OffsetMap -> u -> ([EId], u)
 
 instance GGatherIds () where
-  gGatherIds () = ([], ())
+  gGatherIds _ () = ([], ())
 
 instance GGatherIds u => GGatherIds (Either u Void) where
-  gGatherIds (Left u) = Left <$> (gGatherIds u)
-  gGatherIds _ = undefined
+  gGatherIds offsets (Left u) = Left <$> (gGatherIds offsets u)
+  gGatherIds _ _ = undefined
 
 instance GGatherIds us => GGatherIds (Named field u, us) where
-  gGatherIds (u, us) = (,) <$> pure u <*> gGatherIds us
+  gGatherIds offsets (u, us) = (,) <$> pure u <*> gGatherIds offsets us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -343,13 +373,10 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
-    gGatherIds (Named (Id t), us) = (EId (symbolVal (Proxy :: Proxy field)) (serialize t):eids, (Named (Id t), rs))
+    gGatherIds offsets (Named id, us) = (eid:eids, (Named id', rs))
       where
-        (eids, rs) = gGatherIds us
-    -- TODO
-    gGatherIds (Named (RelativeId t), us) = (ERelativeId (symbolVal (Proxy :: Proxy field)) t:eids, (Named (Id undefined), rs))
-      where
-        (eids, rs) = gGatherIds us
+        (eids, rs) = gGatherIds offsets us
+        (eid, id') = absolutizeId (symbolVal (Proxy :: Proxy field)) id
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -361,15 +388,10 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
-    gGatherIds (Named (ForeignId t), us)
-      = (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (serialize t):eids, (Named (ForeignId t), rs))
+    gGatherIds offsets (Named fid, us) = (eid:eids, (Named fid', rs))
       where
-        (eids, rs) = gGatherIds us
-    -- TODO
-    gGatherIds (Named (ForeignRelativeId t), us)
-      = (EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t:eids, (Named (ForeignId undefined), rs))
-      where
-        (eids, rs) = gGatherIds us
+        (eids, rs) = gGatherIds offsets us
+        (eid, fid') = absolutizeForeignId fid
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -378,33 +400,37 @@ instance {-# OVERLAPPING #-}
   , GGatherIds us
 
   , Foldable f
+  , Functor f
 
   , KnownSymbol table
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
-    gGatherIds (Named f, us)
-    -- TODO
-      = undefined -- map (EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) . serialize) (toList f) <> gGatherIds us
+    gGatherIds offsets (Named f, us) = (fids <> eids, (Named f', rs))
+      where
+        (eids, rs) = gGatherIds offsets us
+        f' = fmap (snd. absolutizeForeignId) f
+        fids = fmap (fst . absolutizeForeignId) (toList f)
 
 class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: u tables 'Unresolved -> ([EId], u tables 'Unresolved)
+  gatherIds :: OffsetMap -> u tables 'Unresolved -> ([EId], u tables 'Unresolved)
   default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
-    => u tables 'Unresolved
+    => OffsetMap
+    -> u tables 'Unresolved
     -> ([EId], u tables 'Unresolved)
-  gatherIds u = (eids, fromEot r)
+  gatherIds offsets u = (eids, fromEot r)
     where
-      (eids, r) = gGatherIds (toEot u)
+      (eids, r) = gGatherIds offsets (toEot u)
 
 -- Insert ----------------------------------------------------------------------
 
 class GInsertTables t where
-  gInsert :: Backend db => [SerializedTable] -> db -> InsertOptions -> t -> IO ()
+  gInsert :: Backend db => db -> [SerializedTable] -> InsertOptions -> t -> IO ()
 
 instance GInsertTables () where
-  gInsert srs db opts _ = do
+  gInsert db srs opts _ = do
 
     case opts of
       ErrorOnDuplicates
@@ -458,7 +484,7 @@ instance GInsertTables () where
       missingRelFids = [ fid | fid@(_, _, False, _) <- missingFids ]
 
 instance GInsertTables t => GInsertTables (Either t Void) where
-  gInsert srs db opts (Left t) = gInsert srs db opts t
+  gInsert db srs opts (Left t) = gInsert db srs opts t
   gInsert _ _ _ _ = undefined
 
 instance
@@ -470,10 +496,10 @@ instance
   , KnownSymbol table
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
-    gInsert srs db opts (Named records, ts) = do
-      gInsert ((symbolVal (Proxy :: Proxy table), srsTable):srs) db opts ts
+    gInsert db srs opts (Named records, ts) = do
+      gInsert db ((symbolVal (Proxy :: Proxy table), srsTable):srs) opts ts
       where
-        srsTable = [ serialize <$> gatherIds r | r <- records ]
+        srsTable = [ serialize <$> gatherIds undefined r | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
   -- | Consistency checks:
@@ -492,7 +518,7 @@ class InsertTables (t :: TableMode -> *) where
     -> InsertOptions
     -> t 'Batch
     -> IO ()
-  insert db opts = gInsert [] db opts . toEot
+  insert db opts = gInsert db [] opts . toEot
 
 -- Expand ----------------------------------------------------------------------
 
