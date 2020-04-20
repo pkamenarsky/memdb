@@ -21,7 +21,6 @@
 
 module Database.Immutable.Experimental where
 
-import           Control.Monad (unless)
 import           Control.DeepSeq (NFData (rnf))
 
 import qualified Data.ByteString as B
@@ -163,8 +162,11 @@ class Backend backend where
   insertTables
     :: backend
     -> InsertOptions
-    -> [(TableName, FieldName, B.ByteString)]
-    -> [SerializedTable]
+    -> (OffsetMap ->
+          ( [(TableName, FieldName, B.ByteString)]
+          , [SerializedTable]
+          )
+       )
     -> IO ()
 
 -- LookupById ------------------------------------------------------------------
@@ -179,7 +181,10 @@ instance GLookupById r => GLookupById (Either r Void) where
   gLookupById db snapshot = Left . gLookupById db snapshot
 
 instance (GLookupById rs) => GLookupById (Named x r, rs) where
-  gLookupById db snapshot table = (undefined, gLookupById db snapshot table)
+  gLookupById db snapshot table
+    = ( error "Ordinary fields are undefined for lookups"
+      , gLookupById db snapshot table
+      )
 
 instance {-# OVERLAPPING #-}
   ( Serialize k
@@ -319,13 +324,16 @@ type OffsetMap = M.Map String Word64
 absolutizeId
   :: Serialize t
 
-  => String
+  => OffsetMap
+  -> String
   -> RecordId t
   -> (EId, RecordId t)
-absolutizeId table (Id t) = (EId table (serialize t), Id t)
-absolutizeId table (RelativeId t)
+absolutizeId _ table (Id t) = (EId table (serialize t), Id t)
+absolutizeId offsets table (RelativeId t)
   = ( ERelativeId table t
-    , Id undefined -- TODO
+    , case M.lookup table offsets of
+        Just offset -> Id (offset + t)
+        Nothing -> Id t -- TODO: good?
     )
 
 absolutizeForeignId
@@ -333,15 +341,18 @@ absolutizeForeignId
   => KnownSymbol table
   => KnownSymbol field
 
-  => ForeignRecordId table field t
+  => OffsetMap
+  -> ForeignRecordId table field t
   -> (EId, ForeignRecordId table field t)
-absolutizeForeignId (ForeignId t)
+absolutizeForeignId _ (ForeignId t)
   = ( EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (serialize t)
     , ForeignId t
     )
-absolutizeForeignId (ForeignRelativeId t)
+absolutizeForeignId offsets (ForeignRelativeId t)
   = ( EForeignRelativeId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t
-    , ForeignId undefined -- TODO
+    , case M.lookup (symbolVal (Proxy :: Proxy table)) offsets of
+        Just offset -> ForeignId (offset + t)
+        Nothing -> ForeignId t -- TODO: good?
     )
 
 data EId
@@ -376,7 +387,7 @@ instance {-# OVERLAPPING #-}
     gGatherIds offsets (Named id, us) = (eid:eids, (Named id', rs))
       where
         (eids, rs) = gGatherIds offsets us
-        (eid, id') = absolutizeId (symbolVal (Proxy :: Proxy field)) id
+        (eid, id') = absolutizeId offsets (symbolVal (Proxy :: Proxy field)) id
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -391,7 +402,7 @@ instance {-# OVERLAPPING #-}
     gGatherIds offsets (Named fid, us) = (eid:eids, (Named fid', rs))
       where
         (eids, rs) = gGatherIds offsets us
-        (eid, fid') = absolutizeForeignId fid
+        (eid, fid') = absolutizeForeignId offsets fid
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -409,8 +420,8 @@ instance {-# OVERLAPPING #-}
     gGatherIds offsets (Named f, us) = (fids <> eids, (Named f', rs))
       where
         (eids, rs) = gGatherIds offsets us
-        f' = fmap (snd. absolutizeForeignId) f
-        fids = fmap (fst . absolutizeForeignId) (toList f)
+        f' = fmap (snd . absolutizeForeignId offsets) f
+        fids = fmap (fst . absolutizeForeignId offsets) (toList f)
 
 class GatherIds (tables :: TableMode -> *) u where
   gatherIds :: OffsetMap -> u tables 'Unresolved -> ([EId], u tables 'Unresolved)
@@ -427,20 +438,22 @@ class GatherIds (tables :: TableMode -> *) u where
 -- Insert ----------------------------------------------------------------------
 
 class GInsertTables t where
-  gInsert :: Backend db => db -> [SerializedTable] -> InsertOptions -> t -> IO ()
+  gInsert
+    :: InsertOptions
+    -> t
+    -> [SerializedTable]
+    -> OffsetMap
+    -> ( [(TableName, FieldName, B.ByteString)] -- ^ Missing absolute foreign ids
+       , [SerializedTable]                      -- ^ Absolutized, serialized tables
+       )
 
 instance GInsertTables () where
-  gInsert db srs opts _ = do
-
-    case opts of
-      ErrorOnDuplicates
-        | not (null duplicateIds) -> error "gInsert: duplicate ids"
-      _ -> pure ()
-
-    unless (null missingRelFids) $ error "gInsert: missing relative foreign ids"
-
-    insertTables db opts missingAbsFids srs
-
+  gInsert opts () srs _
+    | null missingRelFids = error "gInsert: missing relative foreign ids"
+    | otherwise = case opts of
+        ErrorOnDuplicates
+          | not (null duplicateIds) -> error "gInsert: duplicate ids"
+        _ -> (missingAbsFids, srs)
     where
       allEids :: [(TableName, EId)]
       allEids = 
@@ -484,7 +497,7 @@ instance GInsertTables () where
       missingRelFids = [ fid | fid@(_, _, False, _) <- missingFids ]
 
 instance GInsertTables t => GInsertTables (Either t Void) where
-  gInsert db srs opts (Left t) = gInsert db srs opts t
+  gInsert opts (Left t) srs offsets = gInsert opts t srs offsets 
   gInsert _ _ _ _ = undefined
 
 instance
@@ -496,10 +509,10 @@ instance
   , KnownSymbol table
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
-    gInsert db srs opts (Named records, ts) = do
-      gInsert db ((symbolVal (Proxy :: Proxy table), srsTable):srs) opts ts
+    gInsert opts (Named records, ts) srs offsets 
+      = gInsert opts ts ((symbolVal (Proxy :: Proxy table), srsTable):srs) offsets 
       where
-        srsTable = [ serialize <$> gatherIds undefined r | r <- records ]
+        srsTable = [ serialize <$> gatherIds offsets r | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
   -- | Consistency checks:
@@ -518,7 +531,7 @@ class InsertTables (t :: TableMode -> *) where
     -> InsertOptions
     -> t 'Batch
     -> IO ()
-  insert db opts = gInsert db [] opts . toEot
+  insert db opts batch = insertTables db opts (gInsert opts (toEot batch) [])
 
 -- Expand ----------------------------------------------------------------------
 
