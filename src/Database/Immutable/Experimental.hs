@@ -323,25 +323,28 @@ type OffsetMap = M.Map String Word64
 
 absolutizeId
   :: Serialize t
+  => Show t
 
   => OffsetMap
-  -> String
+  -> TableName
+  -> FieldName
   -> RecordId t
   -> (EId, RecordId t)
-absolutizeId _ table (Id t) = (EId table (serialize t), Id t)
-absolutizeId offsets table (RelativeId t)
+absolutizeId _ _ field (Id t) = (EId field t, Id t)
+absolutizeId offsets table field (RelativeId t)
   = case M.lookup table offsets of
       Just offset -> 
-        ( EAbsolutizedId table (offset + t)
+        ( EAbsolutizedId field (offset + t)
         , Id (offset + t)
         )
       Nothing -> 
-        ( EAbsolutizedId table t
+        ( EAbsolutizedId field t
         , Id t
         )
 
 absolutizeForeignId
   :: forall table field t. Serialize t
+  => Show t
   => KnownSymbol table
   => KnownSymbol field
 
@@ -349,7 +352,7 @@ absolutizeForeignId
   -> ForeignRecordId table field t
   -> (EId, ForeignRecordId table field t)
 absolutizeForeignId _ (ForeignId t)
-  = ( EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) (serialize t)
+  = ( EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) t
     , ForeignId t
     )
 absolutizeForeignId offsets (ForeignRelativeId t)
@@ -364,11 +367,12 @@ absolutizeForeignId offsets (ForeignRelativeId t)
         )
 
 data EId
-  = EId FieldName B.ByteString
+  = forall t. (Show t, Serialize t) => EId FieldName t
   | EAbsolutizedId FieldName Word64
-  | EForeignId TableName FieldName B.ByteString
+  | forall t. (Show t, Serialize t) => EForeignId TableName FieldName t
   | EForeignAbsolutizedId TableName FieldName Word64
-  deriving Show
+
+deriving instance Show EId
 
 class GGatherIds u where
   gGatherIds :: TableName -> OffsetMap -> u -> ([EId], u)
@@ -395,7 +399,7 @@ instance {-# OVERLAPPING #-}
     gGatherIds table offsets (Named id, us) = (eid:eids, (Named id', rs))
       where
         (eids, rs) = gGatherIds table offsets us
-        (eid, id') = absolutizeId offsets table id
+        (eid, id') = absolutizeId offsets table (symbolVal (Proxy :: Proxy field)) id
 
 instance {-# OVERLAPPING #-}
   ( Serialize t

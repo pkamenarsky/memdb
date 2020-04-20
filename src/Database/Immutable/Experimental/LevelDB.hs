@@ -129,7 +129,7 @@ instance Backend DB where
       ErrorOnDuplicates -> do
         anyDuplicateId <- or <$> sequence
           [ case eid of
-              EId field value -> idExists (pack table) (pack field) value
+              EId field value -> idExists (pack table) (pack field) (serialize value)
               EAbsolutizedId field value -> idExists (pack table) (pack field) (serialize value)
               _ -> pure True
 
@@ -147,18 +147,23 @@ instance Backend DB where
 
           sequence
             [ case eid of
-                EId field k -> LDB.put db writeOpts (tableId (pack table) (pack field) k) (serialize index)
-                EAbsolutizedId field k -> do
+                EId field value -> do
+                  print $ "Writing EId: " <> show value
+                  LDB.put db writeOpts (tableId (pack table) (pack field) (serialize value)) (serialize index)
+                EAbsolutizedId field value -> do
 
-                  when (k >= final) $ error "Consistency violation: relative id out of bounds"
+                  when (value > final) $ error "Consistency violation: relative id out of bounds"
+                  print $ "Writing EAbsolutizedId: " <> show value
 
-                  LDB.put db writeOpts (tableId (pack table) (pack field) (serialize (offset + k))) (serialize index)
+                  LDB.put db writeOpts (tableId (pack table) (pack field) (serialize value)) (serialize index)
                 _ -> pure ()
             | eid <- eids
             ]
       | (table, records) <- tables
-      , Just offset <- [ M.lookup table offsetMap ]
-      , Just final <- [ M.lookup table offsetMap' ]
+
+      , let offset = fromMaybe 0 $ M.lookup table offsetMap
+            final  = fromMaybe 0 $ M.lookup table offsetMap'
+
       , ((eids, record), index) <- zip records [offset..]
       ]
 
@@ -180,13 +185,13 @@ instance Backend DB where
 --------------------------------------------------------------------------------
 
 testLDB = do
-  withDB opts "test" $ \db -> do
+  withDB opts "ldb" $ \db -> do
     insert db OverwriteDuplicates companyI
 
     p <- withSnapshot db (lookupTest db)
 
     print p
-    pure "DONE"
+    putStrLn "DONE"
   where
     opts = LDB.defaultOptions
       { LDB.createIfMissing = True
@@ -194,6 +199,6 @@ testLDB = do
 
     lookupTest db snapshot = (name <$> person, fmap (fmap name) f')
       where
-        person = lookup (pid $ persons lookups) 5
+        person = lookup (pid $ persons lookups) 10
         f' = (fmap get . friend) <$> person
         lookups = lookupTables db snapshot
