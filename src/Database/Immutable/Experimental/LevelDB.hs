@@ -3,7 +3,7 @@
 
 module Database.Immutable.Experimental.LevelDB
   ( DB
-  , open
+  , withDB
   , Backend (..)
 
   , testLDB
@@ -15,11 +15,17 @@ import           Control.Exception (evaluate)
 import           Control.Concurrent
 
 import qualified Data.ByteString.Char8 as BC
+import           Data.Maybe (fromMaybe)
 import           Data.Monoid ((<>))
+import qualified Data.Map as M
 import qualified Data.Serialize as S
 import           Data.Word
 
+import qualified Data.Stream.Monadic as Stream
+
 import           Database.Immutable.Experimental
+import qualified Database.LevelDB.Iterator as LDB
+import qualified Database.LevelDB.Streaming as LDB
 import qualified Database.LevelDB.Base as LDB
 
 import           System.IO.Unsafe (unsafePerformIO)
@@ -37,14 +43,35 @@ tableId table field value = "i:" <> table <> ":" <> field <> ":" <> value
 
 data DB = DB
   { _dbLevelDB :: LDB.DB
-  , _dbSizeLock :: MVar ()
+  , _dbOffsets :: MVar (M.Map BC.ByteString Word64)
   }
 
-open :: LDB.Options -> FilePath -> IO DB
-open opts path = do
-  db <- LDB.open path opts
-  lock <- newMVar ()
-  pure $ DB db lock
+withDB :: LDB.Options -> FilePath -> (DB -> IO a) -> IO a
+withDB opts path f = LDB.withDB path opts $ \db -> do
+  sizesBS <- LDB.withIter db readOpts $ \i -> Stream.toList $ LDB.entrySlice i (range "s:") LDB.Asc
+
+  offsetMap <- case sizeMap "s:" sizesBS of
+    Left e -> error e
+    Right m -> newMVar (M.fromList m)
+
+  f (DB db offsetMap)
+
+  where
+    sizeMap prefix sizesBS = sequence
+      [ (,) <$> pure (BC.drop prefixLength table) <*> S.runGet S.get count
+      | (table, count) <- sizesBS
+      ]
+      where
+        prefixLength = BC.length prefix
+
+    range prefix = LDB.KeyRange
+      { LDB.start = prefix
+      , LDB.end = \cur -> compare (BC.take (BC.length prefix) cur) prefix
+      }
+
+    readOpts = LDB.defaultReadOptions
+      { LDB.useSnapshot = Nothing
+      }
 
 instance Backend DB where
   type Snapshot DB = LDB.Snapshot
@@ -70,21 +97,16 @@ instance Backend DB where
         }
 
   insertTables (DB db lock) opts fids tables = do
-    -- TODO: don't read here, store sizes in MVar (db can't be opened multiple times)
-    offsets <- withMVar lock $ \_ -> do
-      sequence
+    offsets <- modifyMVar lock $ \offsetMap -> do
+      (offsets, offsetMap') <- unzip <$> sequence
         [ do
-            offsetBS <- LDB.get db readOpts (tableSize $ BC.pack table)
-            case S.runGet S.get <$> offsetBS of
-              Just (Right offset) -> do
-                LDB.put db writeOpts (tableSize $ BC.pack table) (S.runPut $ S.put (offset + count))
-                pure offset
-              _ -> do
-                LDB.put db writeOpts (tableSize $ BC.pack table) (S.runPut $ S.put count)
-                pure 0
+            LDB.put db writeOpts (tableSize table) (S.runPut $ S.put (offset + count))
+            pure (offset, (table, offset + count))
                                                                                       
         | (table, count) <- tableCounts
+        , let offset = fromMaybe 0 $ M.lookup table offsetMap
         ]
+      pure (offsetMap <> M.fromList offsetMap', offsets)
 
     sequence_
       [ do
@@ -104,26 +126,27 @@ instance Backend DB where
         { LDB.useSnapshot = Nothing
         }
 
-      tableCounts :: [(String, Word64)]
+      tableCounts :: [(BC.ByteString, Word64)]
       tableCounts = 
-        [ (table, fromIntegral $ length records)
+        [ (BC.pack table, fromIntegral $ length records)
         | (table, records) <- tables
         ]
 
 --------------------------------------------------------------------------------
 
 testLDB = do
-  db <- flip open "test" $ LDB.defaultOptions
-    { LDB.createIfMissing = True
-    }
+  withDB opts "test" $ \db -> do
+    insert db OverwriteDuplicates companyI
 
-  insert db OverwriteDuplicates companyI
+    p <- withSnapshot db (lookupTest db)
 
-  p <- withSnapshot db (lookupTest db)
-
-  print p
-  pure "DONE"
+    print p
+    pure "DONE"
   where
+    opts = LDB.defaultOptions
+      { LDB.createIfMissing = True
+      }
+
     lookupTest db snapshot = (name <$> person, fmap (fmap name) f')
       where
         person = lookup (pid $ persons lookups) 5
