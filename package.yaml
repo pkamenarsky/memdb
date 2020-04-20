@@ -40,7 +40,7 @@ library:
   exposed-modules:
   - Database.Immutable
   - Database.Immutable.Experimental
-  - Database.Immutable.Experimental.LDB
+  - Database.Immutable.Experimental.LevelDB
   - Database.Immutable.Read
   - Database.Immutable.Write
   - Multimap.ByteString
