@@ -31,6 +31,7 @@ import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
 import           Data.IORef (IORef, modifyIORef, newIORef, readIORef)
 import qualified Data.Map as M
+import qualified Data.Set as S
 import           Data.Word (Word64)
 
 import qualified GHC.Generics as G
@@ -378,7 +379,23 @@ class GInsertTables t where
   gInsert :: Backend db => [SerializedTable] -> db -> t -> IO ()
 
 instance GInsertTables () where
-  gInsert srs db _ = insertTables db srs
+  gInsert srs db _ = do
+    insertTables db srs
+    where
+      allEids :: [(TableName, EId)]
+      allEids = 
+        [ (table, eid)
+        | (table, records) <- srs
+        , (eids, _) <- records
+        , eid <- eids
+        ]
+
+      ids :: S.Set (TableName, FieldName, B.ByteString)
+      ids  = S.fromList
+        [ case eid of
+            EId field k -> (table, field, S.runPut (S.put k))
+        | (table, eid) <- allEids
+        ]
 
 instance GInsertTables t => GInsertTables (Either t Void) where
   gInsert srs db (Left t) = gInsert srs db t
@@ -496,8 +513,6 @@ employerU = Employer
   , address = "thug mansion"
   , employees = MaybeList [Just $ ForeignId 5]
   }
-
-eids = gatherIds employerU
 
 personR :: Person CompanyTables 'Resolved
 personR = undefined

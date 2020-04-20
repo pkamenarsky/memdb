@@ -91,7 +91,7 @@ instance Backend DB where
           LDB.put db writeOpts (tableRecord (BC.pack table) index) record
           sequence
             [ LDB.put db writeOpts (tableId (BC.pack table) (BC.pack field) (S.runPut $ S.put k)) (S.runPut $ S.put index)
-            | EId field k  <- eids
+            | EId field k <- eids
             ]
       | ((table, records), offset) <- zip tables offsets
       , ((eids, record), index) <- zip records [offset..]
