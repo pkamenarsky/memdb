@@ -371,17 +371,17 @@ data EId
   deriving Show
 
 class GGatherIds u where
-  gGatherIds :: OffsetMap -> u -> ([EId], u)
+  gGatherIds :: TableName -> OffsetMap -> u -> ([EId], u)
 
 instance GGatherIds () where
-  gGatherIds _ () = ([], ())
+  gGatherIds _ _ () = ([], ())
 
 instance GGatherIds u => GGatherIds (Either u Void) where
-  gGatherIds offsets (Left u) = Left <$> (gGatherIds offsets u)
-  gGatherIds _ _ = undefined
+  gGatherIds table offsets (Left u) = Left <$> (gGatherIds table offsets u)
+  gGatherIds _ _ _ = undefined
 
 instance GGatherIds us => GGatherIds (Named field u, us) where
-  gGatherIds offsets (u, us) = (,) <$> pure u <*> gGatherIds offsets us
+  gGatherIds table offsets (u, us) = (,) <$> pure u <*> gGatherIds table offsets us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -392,10 +392,10 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
-    gGatherIds offsets (Named id, us) = (eid:eids, (Named id', rs))
+    gGatherIds table offsets (Named id, us) = (eid:eids, (Named id', rs))
       where
-        (eids, rs) = gGatherIds offsets us
-        (eid, id') = absolutizeId offsets (symbolVal (Proxy :: Proxy field)) id
+        (eids, rs) = gGatherIds table offsets us
+        (eid, id') = absolutizeId offsets table id
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -407,9 +407,9 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
-    gGatherIds offsets (Named fid, us) = (eid:eids, (Named fid', rs))
+    gGatherIds table offsets (Named fid, us) = (eid:eids, (Named fid', rs))
       where
-        (eids, rs) = gGatherIds offsets us
+        (eids, rs) = gGatherIds table offsets us
         (eid, fid') = absolutizeForeignId offsets fid
 
 instance {-# OVERLAPPING #-}
@@ -425,23 +425,24 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
-    gGatherIds offsets (Named f, us) = (fids <> eids, (Named f', rs))
+    gGatherIds table offsets (Named f, us) = (fids <> eids, (Named f', rs))
       where
-        (eids, rs) = gGatherIds offsets us
+        (eids, rs) = gGatherIds table offsets us
         f' = fmap (snd . absolutizeForeignId offsets) f
         fids = fmap (fst . absolutizeForeignId offsets) (toList f)
 
 class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: OffsetMap -> u tables 'Unresolved -> ([EId], u tables 'Unresolved)
+  gatherIds :: TableName -> OffsetMap -> u tables 'Unresolved -> ([EId], u tables 'Unresolved)
   default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
-    => OffsetMap
+    => TableName
+    -> OffsetMap
     -> u tables 'Unresolved
     -> ([EId], u tables 'Unresolved)
-  gatherIds offsets u = (eids, fromEot r)
+  gatherIds table offsets u = (eids, fromEot r)
     where
-      (eids, r) = gGatherIds offsets (toEot u)
+      (eids, r) = gGatherIds table offsets (toEot u)
 
 -- Insert ----------------------------------------------------------------------
 
@@ -457,10 +458,10 @@ class GInsertTables t where
 
 instance GInsertTables () where
   gInsert opts () srs _
-    | null missingRelFids = error "gInsert: missing relative foreign ids"
+    | not (null missingRelFids) = error $ "Consistency violation (gInsert): missing relative foreign ids: " <> show (ids, fids)
     | otherwise = case opts of
         ErrorOnDuplicates
-          | not (null duplicateIds) -> error "gInsert: duplicate ids"
+          | not (null duplicateIds) -> error "Consistency violation (gInsert): duplicate ids"
         _ -> (missingAbsFids, srs)
     where
       allEids :: [(TableName, EId)]
@@ -489,17 +490,17 @@ instance GInsertTables () where
       duplicateIds :: [EId]
       duplicateIds = [ id | (Sum count, Last id) <- M.elems idsCount, count > 1 ]
 
-      fids :: [(TableName, FieldName, Bool, B.ByteString)]
+      fids :: [(EId, (TableName, FieldName, Bool, B.ByteString))]
       fids = mconcat
         [ case eid of
-            EForeignId table field k -> [(table, field, True, serialize k)]
-            EForeignAbsolutizedId table field k -> [(table, field, False, serialize k)]
+            eid'@(EForeignId table field k) -> [(eid', (table, field, True, serialize k))]
+            eid'@(EForeignAbsolutizedId table field k) -> [(eid', (table, field, False, serialize k))]
             _ -> []
         | (_, eid) <- allEids
         ]
 
       missingFids :: [(TableName, FieldName, Bool, B.ByteString)]
-      missingFids = S.toList $ S.fromList fids `S.difference` S.fromList (fmap snd ids)
+      missingFids = S.toList $ S.fromList (fmap snd fids) `S.difference` S.fromList (fmap snd ids)
 
       missingAbsFids = [ (table, field, k) | (table, field, True, k) <- missingFids ]
       missingRelFids = [ fid | fid@(_, _, False, _) <- missingFids ]
@@ -518,9 +519,10 @@ instance
   ) =>
   GInsertTables (Named table [r tables 'Unresolved], ts) where
     gInsert opts (Named records, ts) srs offsets 
-      = gInsert opts ts ((symbolVal (Proxy :: Proxy table), srsTable):srs) offsets 
+      = gInsert opts ts ((table, srsTable):srs) offsets 
       where
-        srsTable = [ serialize <$> gatherIds offsets r | r <- records ]
+        table = symbolVal (Proxy :: Proxy table)
+        srsTable = [ serialize <$> gatherIds table offsets r | r <- records ]
 
 class InsertTables (t :: TableMode -> *) where
   -- | Consistency checks:
@@ -614,9 +616,9 @@ data CompanyTables m = CompanyTables
 
 personU :: Person CompanyTables 'Unresolved
 personU = Person
-  { pid = RelativeId 5
+  { pid = RelativeId 0
   , name = "bla"
-  , friend = Just $ ForeignId 5 -- own best friend
+  , friend = Just $ ForeignRelativeId 0 -- own best friend
   , employer = Just $ ForeignId "boss"
   , pid2 = Id "pid2"
   }
@@ -625,7 +627,7 @@ employerU :: Employer CompanyTables 'Unresolved
 employerU = Employer
   { owner = Id "boss"
   , address = "thug mansion"
-  , employees = MaybeList [Just $ ForeignId 5]
+  , employees = MaybeList [Just $ ForeignRelativeId 0]
   }
 
 personR :: Person CompanyTables 'Resolved
