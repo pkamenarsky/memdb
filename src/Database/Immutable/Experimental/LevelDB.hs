@@ -46,11 +46,23 @@ data DB = DB
   , _dbOffsets :: MVar (M.Map BC.ByteString Word64)
   }
 
+startsWith :: LDB.DB -> BC.ByteString -> IO [LDB.Entry]
+startsWith db prefix = LDB.withIter db readOpts $ \i -> Stream.toList $ LDB.entrySlice i range LDB.Asc
+  where
+    readOpts = LDB.defaultReadOptions
+      { LDB.useSnapshot = Nothing
+      }
+
+    range = LDB.KeyRange
+      { LDB.start = prefix
+      , LDB.end = \cur -> compare (BC.take (BC.length prefix) cur) prefix
+      }
+
 withDB :: LDB.Options -> FilePath -> (DB -> IO a) -> IO a
 withDB opts path f = LDB.withDB path opts $ \db -> do
-  sizesBS <- LDB.withIter db readOpts $ \i -> Stream.toList $ LDB.entrySlice i (range "s:") LDB.Asc
+  offsetsBS <- startsWith db "s:"
 
-  offsetMap <- case sizeMap "s:" sizesBS of
+  offsetMap <- case sizeMap "s:" offsetsBS of
     Left e -> error e
     Right m -> newMVar (M.fromList m)
 
@@ -63,15 +75,6 @@ withDB opts path f = LDB.withDB path opts $ \db -> do
       ]
       where
         prefixLength = BC.length prefix
-
-    range prefix = LDB.KeyRange
-      { LDB.start = prefix
-      , LDB.end = \cur -> compare (BC.take (BC.length prefix) cur) prefix
-      }
-
-    readOpts = LDB.defaultReadOptions
-      { LDB.useSnapshot = Nothing
-      }
 
 instance Backend DB where
   type Snapshot DB = LDB.Snapshot

@@ -42,11 +42,13 @@ import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fro
 import           Prelude hiding (id, lookup)
 
 -- DONE: absolute/relative ids
+-- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
 
--- TODO: batches
 -- TODO: consistency checks (must be done on insert, want early abort/error reporting)
+-- TODO: batches
+
+-- TODO: error -> MonadError
 -- TODO: record <-> table naming
--- TODO: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
 
 --------------------------------------------------------------------------------
 
