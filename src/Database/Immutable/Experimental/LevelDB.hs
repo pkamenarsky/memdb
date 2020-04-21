@@ -35,17 +35,17 @@ import           System.IO.Unsafe (unsafePerformIO)
 
 import           Prelude hiding (lookup, length)
 
-tableBatch :: BC.ByteString
-tableBatch = "b"
+keyTableBatch :: BC.ByteString
+keyTableBatch = "b"
 
-tableSize :: BC.ByteString -> BC.ByteString
-tableSize table = "s:" <> table
+keyTableSize :: BC.ByteString -> BC.ByteString
+keyTableSize table = "s:" <> table
 
-tableRecord :: BC.ByteString -> Word64 -> Word64 -> BC.ByteString
-tableRecord table batch index = "r:" <> table <> ":" <> serialize batch <> ":" <> serialize (batch, index)
+keyTableRecord :: BC.ByteString -> Word64 -> Word64 -> BC.ByteString
+keyTableRecord table batch index = "r:" <> table <> ":" <> serialize batch <> ":" <> serialize (batch, index)
 
-tableId :: BC.ByteString -> BC.ByteString -> BC.ByteString -> BC.ByteString
-tableId table field value = "i:" <> table <> ":" <> field <> ":" <> value
+keyTableId :: BC.ByteString -> BC.ByteString -> BC.ByteString -> BC.ByteString
+keyTableId table field value = "i:" <> table <> ":" <> field <> ":" <> value
 
 data DB = DB
   { _dbLevelDB :: LDB.DB
@@ -64,7 +64,7 @@ withDB :: LDB.Options -> FilePath -> (DB -> IO a) -> IO a
 withDB opts path f = LDB.withDB path opts $ \db -> do
   offsetsBS <- startsWith db readOpts "s:"
 
-  batchBS <- LDB.get db readOpts tableBatch
+  batchBS <- LDB.get db readOpts keyTableBatch
 
   offsetMap <- case (,) <$> sizeMap "s:" offsetsBS <*> maybe (pure 0) (S.runGet S.get) batchBS of
     Left e -> error e
@@ -91,16 +91,11 @@ instance Backend DB where
     a <- LDB.withSnapshot db (pure . f)
     evaluate (force a)
 
-  lookupRecord db'@(DB db _) snapshot table field k = unsafePerformIO $ do
-    indexBS <- LDB.get db opts (tableId (pack table) (pack field) (serialize k))
+  lookupRecord (DB db _) snapshot table field k = unsafePerformIO $ do
+    indexBS <- LDB.get db opts (keyTableId (pack table) (pack field) (serialize k))
 
     case S.runGet S.get <$> indexBS of
-      Just (Right (batch, index)) -> do
-        recordBS <- LDB.get db opts (tableRecord (pack table) batch index)
-
-        case S.runGet S.get <$> recordBS of
-          Just (Right v) -> pure $ Just (resolve db' snapshot v)
-          _ -> pure Nothing
+      Just (Right (batch, index)) -> LDB.get db opts (keyTableRecord (pack table) batch index)
       _ -> pure Nothing
 
     where
@@ -114,7 +109,7 @@ instance Backend DB where
 
       newOffsets <- sequence
         [ do
-            LDB.put db writeOpts (tableSize table) (serialize (offset + count))
+            LDB.put db writeOpts (keyTableSize table) (serialize (offset + count))
             pure (unpack table, offset + count)
         | (table, count) <- tableCounts tables
         , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
@@ -122,7 +117,7 @@ instance Backend DB where
 
       let offsetMap' = M.fromList newOffsets <> offsetMap
 
-      LDB.put db writeOpts tableBatch (serialize (batch + 1))
+      LDB.put db writeOpts keyTableBatch (serialize (batch + 1))
 
       pure ((offsetMap', batch + 1), (offsetMap, offsetMap', missingFids, tables, batch))
 
@@ -156,19 +151,19 @@ instance Backend DB where
 
     sequence_
       [ do
-          LDB.put db writeOpts (tableRecord (pack table) batch index) record
+          LDB.put db writeOpts (keyTableRecord (pack table) batch index) record
 
           sequence
             [ case eid of
                 EId field value -> do
                   print $ "Writing EId: " <> show value
-                  LDB.put db writeOpts (tableId (pack table) (pack field) (serialize value)) (serialize (batch, index))
+                  LDB.put db writeOpts (keyTableId (pack table) (pack field) (serialize value)) (serialize (batch, index))
                 EAbsolutizedId field value -> do
 
                   when (value > final) $ error "Consistency violation: relative id out of bounds"
                   print $ "Writing EAbsolutizedId: " <> show value
 
-                  LDB.put db writeOpts (tableId (pack table) (pack field) (serialize value)) (serialize (batch, index))
+                  LDB.put db writeOpts (keyTableId (pack table) (pack field) (serialize value)) (serialize (batch, index))
                 _ -> pure ()
             | eid <- eids
             ]
@@ -182,7 +177,7 @@ instance Backend DB where
 
     where
       idExists :: BC.ByteString -> BC.ByteString -> BC.ByteString -> IO Bool
-      idExists table field value = isJust <$> LDB.get db readOpts (tableId table field value)
+      idExists table field value = isJust <$> LDB.get db readOpts (keyTableId table field value)
 
       writeOpts = LDB.defaultWriteOptions
       readOpts = LDB.defaultReadOptions
@@ -194,6 +189,10 @@ instance Backend DB where
         [ (pack table, fromIntegral $ L.length records)
         | (table, records) <- tables
         ]
+
+  tableSize = undefined
+
+  tableRecords = undefined
 
 --------------------------------------------------------------------------------
 

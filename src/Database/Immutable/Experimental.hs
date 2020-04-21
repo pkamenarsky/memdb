@@ -24,7 +24,7 @@ module Database.Immutable.Experimental where
 import           Control.DeepSeq (NFData (rnf))
 
 import qualified Data.ByteString as B
-import           Data.Foldable
+import           Data.Foldable (Foldable, toList)
 import qualified Data.Map as M
 import           Data.Maybe (fromJust)
 import           Data.Semigroup (Sum (Sum), Last (Last))
@@ -39,13 +39,14 @@ import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..),
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
-import           Prelude hiding (id, lookup)
+import           Prelude hiding (id, lookup, length)
 
 -- DONE: absolute/relative ids
 -- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
 -- DONE: consistency checks (must be done on insert, want early abort/error reporting)
 
 -- TODO: batches
+-- TODO: simplify lookupRecord (only operate on ByteStrings, keep Backend simple)
 
 -- TODO: error -> MonadError
 -- TODO: record <-> table naming
@@ -147,17 +148,13 @@ class Backend backend where
     -> IO a
 
   lookupRecord
-    :: Serialize k
-    => Serialize (v tables 'Unresolved)
-    => Resolve tables v
-  
-    => backend
+    :: backend
     -> Snapshot backend
 
     -> TableName
     -> FieldName
-    -> k
-    -> Maybe (v tables 'Resolved)
+    -> B.ByteString
+    -> Maybe B.ByteString
 
   insertTables
     :: backend
@@ -169,9 +166,36 @@ class Backend backend where
        )
     -> IO ()
 
+  tableSize
+    :: backend
+    -> TableName
+    -> Int
+
+  tableRecords
+    :: backend
+    -> TableName
+    -> [B.ByteString]
+
+unsafeLookupRecord
+  :: Serialize k
+  => Serialize (v tables 'Unresolved)
+  => Resolve tables v
+  => Backend backend
+
+  => backend
+  -> Snapshot backend
+
+  -> TableName
+  -> FieldName
+  -> k
+  -> Maybe (v tables 'Resolved)
+unsafeLookupRecord db snapshot table field k
+  = case S.runGet S.get <$> lookupRecord db snapshot table field (serialize k) of
+      Just (Right v) -> Just (resolve db snapshot v)
+      _ -> Nothing
+
 -- LookupField ------------------------------------------------------------------
 
--- TODO: rename to LookupField
 class GLookupField r where
   gLookupById :: Backend db => db -> Snapshot db -> TableName -> r
 
@@ -199,14 +223,14 @@ instance {-# OVERLAPPING #-}
   GLookupField (Named field (LookupFns tables table k), rs) where
     gLookupById db snapshot table
       = ( Named $ LookupFns
-            { lookup = \k -> (lookupRecord db snapshot table (symbolVal (Proxy :: Proxy field)) k)
+            { lookup = \k -> unsafeLookupRecord db snapshot table (symbolVal (Proxy :: Proxy field)) k
             }
         , gLookupById db snapshot table
         )
 
 class LookupField tables (r :: (TableMode -> *) -> RecordMode -> *) where
-  lookupById :: Backend db => db -> Snapshot db -> TableName -> r tables ('LookupField r)
-  default lookupById
+  lookupField :: Backend db => db -> Snapshot db -> TableName -> r tables ('LookupField r)
+  default lookupField
     :: HasEot (r tables ('LookupField r))
     => GLookupField (Eot (r tables ('LookupField r)))
     => Backend db
@@ -214,7 +238,7 @@ class LookupField tables (r :: (TableMode -> *) -> RecordMode -> *) where
     -> Snapshot db
     -> TableName
     -> r tables ('LookupField r)
-  lookupById db snapshot = fromEot . gLookupById db snapshot
+  lookupField db snapshot = fromEot . gLookupById db snapshot
 
 -- Lookup ----------------------------------------------------------------------
 
@@ -231,11 +255,11 @@ instance
   ( LookupField tables t
   , GLookupFields ts
 
-  , KnownSymbol name
+  , KnownSymbol table
   ) =>
-  GLookupFields (Named name (t tables ('LookupField t)), ts) where
+  GLookupFields (Named table (t tables ('LookupField t)), ts) where
     gLookupFields db snapshot
-      = ( Named $ lookupById db snapshot (symbolVal (Proxy :: Proxy name))
+      = ( Named $ lookupField db snapshot (symbolVal (Proxy :: Proxy table))
         , gLookupFields db snapshot
         )
 
@@ -281,7 +305,12 @@ instance
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
     gResolve db snapshot (Named (ForeignId k), us)
-      = ( Named $ Lazy $ fromJust $ lookupRecord db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
+      = ( Named $ Lazy $ fromJust $ unsafeLookupRecord
+            db
+            snapshot
+            (symbolVal (Proxy :: Proxy table))
+            (symbolVal (Proxy :: Proxy field))
+            k
         , gResolve db snapshot us
         )
     gResolve _ _ (Named (ForeignRelativeId _), _) = error "gResolve: ForeignRelativeId"
@@ -300,8 +329,13 @@ instance
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
     gResolve db snapshot (Named k', us) =
-      ( Named $ flip fmap k'
-          $ \(ForeignId k) -> Lazy $ fromJust $ lookupRecord db snapshot (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
+      ( Named $ flip fmap k' $ \(ForeignId k) ->
+          Lazy $ fromJust $ unsafeLookupRecord
+            db
+            snapshot
+            (symbolVal (Proxy :: Proxy table))
+            (symbolVal (Proxy :: Proxy field))
+            k
       , gResolve db snapshot us
       )
 
@@ -548,6 +582,47 @@ class InsertTables (t :: TableMode -> *) where
     -> IO ()
   insert db opts batch = insertTables db opts (gInsert opts (toEot batch) [])
 
+-- LookupTables ----------------------------------------------------------------
+
+class GLookupTables t where
+  gLookupTables :: Backend db => db -> Snapshot db -> t
+
+instance GLookupTables () where
+  gLookupTables _ _ = ()
+
+instance GLookupTables t => GLookupTables (Either t Void) where
+  gLookupTables db = Left . gLookupTables db
+
+instance
+  ( GLookupTables ts
+  , Serialize (t tables 'Unresolved)
+  , Resolve tables t
+  , KnownSymbol table
+  ) =>
+  GLookupTables (Named table (LookupTable tables t), ts) where
+    gLookupTables db snapshot =
+      ( Named $ LookupTable
+          { length = tableSize db (symbolVal (Proxy :: Proxy table))
+          , elems =
+              [ resolve db snapshot record
+              | recordBS <- tableRecords db (symbolVal (Proxy :: Proxy table))
+              , Right record <- [ S.runGet S.get recordBS ]
+              ]
+          }
+      , gLookupTables db snapshot
+      )
+
+class LookupTables (t :: TableMode -> *) where
+  lookupTables :: Backend db => db -> Snapshot db -> t 'LookupTables
+  default lookupTables
+    :: HasEot (t 'LookupTables)
+    => Backend db
+    => GLookupTables (Eot (t 'LookupTables))
+    => db
+    -> Snapshot db
+    -> t 'LookupTables
+  lookupTables db = fromEot . gLookupTables db
+
 -- Expand ----------------------------------------------------------------------
 
 type family ExpandRecord (parent :: Symbol) (record :: *) where
@@ -621,7 +696,7 @@ deriving instance Serialize (Employer CompanyTables 'Unresolved)
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic, LookupFields, InsertTables)
+  } deriving (G.Generic, LookupTables, LookupFields, InsertTables)
 
 --------------------------------------------------------------------------------
 
