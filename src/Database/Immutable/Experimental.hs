@@ -325,6 +325,32 @@ instance
     gResolve _ _ (Named (ForeignRelativeId _), _) = error "gResolve: ForeignRelativeId"
 
 instance
+  ( Serialize (r tables 'Unresolved)
+
+  , Resolve tables r
+  , GResolve us rs
+  ) =>
+  GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
+    gResolve db snapshot (Named u, us)
+      = ( Named $ resolve db snapshot u
+        , gResolve db snapshot us
+        )
+
+instance
+  ( Serialize (r tables 'Unresolved)
+
+  , Functor f
+
+  , Resolve tables r
+  , GResolve us rs
+  ) =>
+  GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
+    gResolve db snapshot (Named u, us)
+      = ( Named $ fmap (resolve db snapshot) u
+        , gResolve db snapshot us
+        )
+
+instance
   ( Serialize u
   , Serialize (r tables 'Unresolved)
 
@@ -636,6 +662,7 @@ data Person tables m = Person
   , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid :: Id tables m Word64
   , pid2 :: Id tables m String
+  , other :: Employer tables m
   } deriving (G.Generic, Resolve CompanyTables, LookupField CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
@@ -669,6 +696,11 @@ personU = Person
   , friend = Just $ ForeignRelativeId 0 -- own best friend
   , employer = Just $ ForeignId "boss"
   , pid2 = Id "pid2"
+  , other = Employer
+      { owner = Id "boss2"
+      , address = "yeyea"
+      , employees = MaybeList []
+      }
   }
 
 employerU :: Employer CompanyTables 'Unresolved

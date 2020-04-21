@@ -114,7 +114,19 @@ instance Backend DB where
       | (prefixedK, indexBS) <- ids
       , Right (batch, index) <- [ S.runGet S.get indexBS ]
       ]
+    -- LDB.withIter db readOpts $ \i -> do
+    --   LDB.iterSeek i prefix
+    --   undefined
     where
+      go i = do
+        a <- LDB.iterEntry i
+        case a of
+          Just a' -> do
+            pure $ undefined:(unsafePerformIO $ do
+              LDB.iterNext i
+              go i
+                             )
+
       prefix = "i:" <> pack table <> ":" <> pack field <> ":"
       prefixLength = BC.length prefix
       readOpts = LDB.defaultReadOptions
