@@ -41,9 +41,11 @@ keyTableBatch = "b"
 keyTableSize :: BC.ByteString -> BC.ByteString
 keyTableSize table = "s:" <> table
 
+-- table:batch:index -> record
 keyTableRecord :: BC.ByteString -> Word64 -> Word64 -> BC.ByteString
-keyTableRecord table batch index = "r:" <> table <> ":" <> serialize batch <> ":" <> serialize (batch, index)
+keyTableRecord table batch index = "r:" <> table <> ":" <> serialize batch <> ":" <> serialize index
 
+-- table:field:fieldValue -> (batch, index)
 keyTableId :: BC.ByteString -> BC.ByteString -> BC.ByteString -> BC.ByteString
 keyTableId table field value = "i:" <> table <> ":" <> field <> ":" <> value
 
@@ -92,10 +94,11 @@ instance Backend DB where
     evaluate (force a)
 
   lookupRecord (DB db _) snapshot table field k = unsafePerformIO $ do
-    indexBS <- LDB.get db opts (keyTableId (pack table) (pack field) (serialize k))
+    indexBS <- LDB.get db opts (keyTableId (pack table) (pack field) k)
 
     case S.runGet S.get <$> indexBS of
-      Just (Right (batch, index)) -> LDB.get db opts (keyTableRecord (pack table) batch index)
+      Just (Right (batch, index)) ->
+        LDB.get db opts (keyTableRecord (pack table) batch index)
       _ -> pure Nothing
 
     where
@@ -228,6 +231,6 @@ testLDB = do
 
     lookupTest db snapshot = (name <$> person, fmap (fmap name) f')
       where
-        person = lookup (pid $ persons lookups) 0
+        person = lookup (pid $ persons lookups) 3
         f' = (fmap get . friend) <$> person
         lookups = lookupFields db snapshot
