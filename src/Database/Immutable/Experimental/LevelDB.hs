@@ -86,11 +86,21 @@ withDB opts path f = LDB.withDB path opts $ \db -> do
       where
         prefixLength = BC.length prefix
 
+newtype Stream a = Stream (IO (Maybe (a, Stream a)))
+
+streamToLazyList :: Stream a -> IO [a]
+streamToLazyList (Stream io) = do
+  a <- io
+  case a of
+    Nothing -> pure []
+    Just (x, next) -> pure $ x:unsafePerformIO (streamToLazyList next)
+
 instance Backend DB where
   type Snapshot DB = LDB.Snapshot
 
   withSnapshot (DB db _) f = LDB.withSnapshot db $ \snapshot -> do
-    evaluate (force $ f snapshot)
+    a <- f snapshot
+    evaluate (force a)
 
   lookupRecord (DB db _) snapshot table field k = unsafePerformIO $ do
     indexBS <- LDB.get db readOpts (keyTableId (pack table) (pack field) k)
@@ -228,13 +238,59 @@ instance Backend DB where
         | (table, records) <- tables
         ]
 
+  readBatches (DB db _) snapshot = unsafePerformIO $
+    LDB.withIter db readOpts $ \i -> do
+      LDB.iterSeek i prefix
+      streamToLazyList (go i 0)
+    where
+      readWhile :: LDB.Iterator -> Word64 -> IO (Either () (Maybe (TableName, BC.ByteString)))
+      readWhile i batchIndex = do
+        entryBS <- LDB.iterEntry i
+
+        case entryBS of
+          Nothing -> pure $ Left ()
+          Just (k, v) -> case parseKey k of
+            (table, tableBatchIndex)
+              | batchIndex == tableBatchIndex -> pure $ Right $ Just (table, v)
+              | otherwise -> pure $ Right Nothing
+
+      readBatch :: LDB.Iterator -> Word64 -> IO (Maybe [(TableName, BC.ByteString)])
+      readBatch i batchIndex = do
+        entryBS <- LDB.iterEntry i
+        case entryBS of
+          Nothing -> pure Nothing
+          Just (k, v) -> case parseKey k of
+            (table, tableBatch) -> undefined
+
+      parseKey :: BC.ByteString -> (TableName, Word64)
+      parseKey = undefined
+
+      go :: LDB.Iterator -> Word64 -> Stream (M.Map TableName [BC.ByteString])
+      go i batchIndex = Stream $ do
+        batch' <- readBatch i batchIndex
+
+        case batch' of
+          Nothing -> pure Nothing
+          Just batch -> pure $ Just (batchMap, go i (batchIndex + 1))
+            where
+              batchMap = M.fromListWith (<>)
+                [ (table, [record])
+                | (table, record) <- batch
+                ]
+        
+      prefix = "r:"
+
+      readOpts = LDB.defaultReadOptions
+        { LDB.useSnapshot = Just snapshot
+        }
+      
 --------------------------------------------------------------------------------
 
 testLDB = do
   withDB opts "ldb" $ \db -> do
     insert db OverwriteDuplicateIndexes companyI
 
-    p <- withSnapshot db (lookupTest db)
+    p <- withSnapshot db (pure . lookupTest db)
 
     print p
     putStrLn "DONE"

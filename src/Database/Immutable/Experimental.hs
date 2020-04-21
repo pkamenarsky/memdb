@@ -149,7 +149,7 @@ class Backend backend where
   withSnapshot
     :: NFData a
     => backend
-    -> (Snapshot backend -> a)
+    -> (Snapshot backend -> IO a)
     -> IO a
 
   lookupRecord
@@ -178,6 +178,11 @@ class Backend backend where
           )
        )
     -> IO ()
+
+  readBatches
+    :: backend
+    -> Snapshot backend
+    -> [M.Map TableName [B.ByteString]]
 
 unsafeLookupRecord
   :: Serialize k
