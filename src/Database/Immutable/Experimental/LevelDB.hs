@@ -89,9 +89,8 @@ withDB opts path f = LDB.withDB path opts $ \db -> do
 instance Backend DB where
   type Snapshot DB = LDB.Snapshot
 
-  withSnapshot (DB db _) f = do
-    a <- LDB.withSnapshot db (pure . f)
-    evaluate (force a)
+  withSnapshot (DB db _) f = LDB.withSnapshot db $ \snapshot -> do
+    evaluate (force $ f snapshot)
 
   lookupRecord (DB db _) snapshot table field k = unsafePerformIO $ do
     indexBS <- LDB.get db readOpts (keyTableId (pack table) (pack field) k)
