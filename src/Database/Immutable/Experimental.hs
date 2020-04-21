@@ -291,9 +291,12 @@ class GResolve u r where
 instance GResolve () () where
   gResolve _ _ () = ()
 
-instance GResolve u r => GResolve (Either u Void) (Either r Void) where
-  gResolve db snapshot (Left u) = Left $ gResolve db snapshot u 
+instance GResolve Void Void where
   gResolve _ _ _ = undefined
+
+instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
+  gResolve db snapshot (Left u) = Left $ gResolve db snapshot u 
+  gResolve db snapshot (Right u) = Right $ gResolve db snapshot u 
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
   gResolve db snapshot (u, us) = (u, gResolve db snapshot us)
@@ -450,9 +453,12 @@ class GGatherIds u where
 instance GGatherIds () where
   gGatherIds _ _ () = ([], ())
 
-instance GGatherIds u => GGatherIds (Either u Void) where
-  gGatherIds table offsets (Left u) = Left <$> (gGatherIds table offsets u)
+instance GGatherIds Void where
   gGatherIds _ _ _ = undefined
+
+instance (GGatherIds u, GGatherIds v) => GGatherIds (Either u v) where
+  gGatherIds table offsets (Left u) = Left <$> (gGatherIds table offsets u)
+  gGatherIds table offsets (Right v) = Right <$> (gGatherIds table offsets v)
 
 instance GGatherIds us => GGatherIds (Named field u, us) where
   gGatherIds table offsets (u, us) = (,) <$> pure u <*> gGatherIds table offsets us
