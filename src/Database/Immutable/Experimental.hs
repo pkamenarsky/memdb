@@ -87,6 +87,7 @@ instance NFData t => NFData (RecordId t) where
 
 data LookupFns tables table k = LookupFns
   { lookup :: k -> Maybe (table tables 'Resolved)
+  , elems :: [(k, table tables 'Resolved)]
   }
 
 type family Id (tables :: TableMode -> *) (recordMode :: RecordMode) t where
@@ -160,6 +161,14 @@ class Backend backend where
     -> B.ByteString
     -> Maybe B.ByteString
 
+  lookupElems
+    :: backend
+    -> Snapshot backend
+
+    -> TableName
+    -> FieldName
+    -> [(B.ByteString, B.ByteString)]
+
   insertTables
     :: backend
     -> InsertOptions
@@ -169,18 +178,6 @@ class Backend backend where
           )
        )
     -> IO ()
-
-  tableSize
-    :: backend
-    -> Snapshot backend
-    -> TableName
-    -> Int
-
-  tableRecords
-    :: backend
-    -> Snapshot backend
-    -> TableName
-    -> [B.ByteString]
 
 unsafeLookupRecord
   :: Serialize k
@@ -230,6 +227,12 @@ instance {-# OVERLAPPING #-}
     gLookupById db snapshot table
       = ( Named $ LookupFns
             { lookup = \k -> unsafeLookupRecord db snapshot table (symbolVal (Proxy :: Proxy field)) k
+            , elems =
+                [ (k', resolve db snapshot v')
+                | (k, v) <- lookupElems db snapshot table (symbolVal (Proxy :: Proxy field))
+                , Right k' <- [ S.runGet S.get k ]
+                , Right v' <- [ S.runGet S.get v ]
+                ]
             }
         , gLookupById db snapshot table
         )
@@ -588,47 +591,6 @@ class InsertTables (t :: TableMode -> *) where
     -> IO ()
   insert db opts batch = insertTables db opts (gInsert opts (toEot batch) [])
 
--- LookupTables ----------------------------------------------------------------
-
-class GLookupTables t where
-  gLookupTables :: Backend db => db -> Snapshot db -> t
-
-instance GLookupTables () where
-  gLookupTables _ _ = ()
-
-instance GLookupTables t => GLookupTables (Either t Void) where
-  gLookupTables db = Left . gLookupTables db
-
-instance
-  ( GLookupTables ts
-  , Serialize (t tables 'Unresolved)
-  , Resolve tables t
-  , KnownSymbol table
-  ) =>
-  GLookupTables (Named table (LookupTable tables t), ts) where
-    gLookupTables db snapshot =
-      ( Named $ LookupTable
-          { length = tableSize db snapshot (symbolVal (Proxy :: Proxy table))
-          , elems =
-              [ resolve db snapshot record
-              | recordBS <- tableRecords db snapshot (symbolVal (Proxy :: Proxy table))
-              , Right record <- [ S.runGet S.get recordBS ]
-              ]
-          }
-      , gLookupTables db snapshot
-      )
-
-class LookupTables (t :: TableMode -> *) where
-  lookupTables :: Backend db => db -> Snapshot db -> t 'LookupTables
-  default lookupTables
-    :: HasEot (t 'LookupTables)
-    => Backend db
-    => GLookupTables (Eot (t 'LookupTables))
-    => db
-    -> Snapshot db
-    -> t 'LookupTables
-  lookupTables db = fromEot . gLookupTables db
-
 -- Expand ----------------------------------------------------------------------
 
 type family ExpandRecord (parent :: Symbol) (record :: *) where
@@ -658,19 +620,13 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = LookupFields | LookupTables | Batch | Cannonical
-
-data LookupTable tables table = LookupTable
-  { length :: Int
-  , elems :: [table tables 'Resolved]
-  }
+data TableMode = LookupFields | Batch | Cannonical
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) table where
   Table tables 'Cannonical table = table tables 'Done
 
   Table tables 'Batch table = [table tables 'Unresolved]
   Table tables 'LookupFields table = table tables ('LookupField table)
-  Table tables 'LookupTables table = LookupTable tables table
 
 --------------------------------------------------------------------------------
 
@@ -702,7 +658,7 @@ deriving instance Serialize (Employer CompanyTables 'Unresolved)
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic, LookupTables, LookupFields, InsertTables)
+  } deriving (G.Generic, LookupFields, InsertTables)
 
 --------------------------------------------------------------------------------
 

@@ -17,7 +17,7 @@ import           Control.Concurrent
 
 import qualified Data.ByteString.Char8 as BC
 import           Data.ByteString.Char8 (pack, unpack)
-import           Data.Maybe (fromMaybe, isJust)
+import           Data.Maybe (catMaybes, fromMaybe, isJust)
 import           Data.Monoid ((<>))
 import qualified Data.List as L
 import qualified Data.Map as M
@@ -94,15 +94,31 @@ instance Backend DB where
     evaluate (force a)
 
   lookupRecord (DB db _) snapshot table field k = unsafePerformIO $ do
-    indexBS <- LDB.get db opts (keyTableId (pack table) (pack field) k)
+    indexBS <- LDB.get db readOpts (keyTableId (pack table) (pack field) k)
 
     case S.runGet S.get <$> indexBS of
       Just (Right (batch, index)) ->
-        LDB.get db opts (keyTableRecord (pack table) batch index)
+        LDB.get db readOpts (keyTableRecord (pack table) batch index)
       _ -> pure Nothing
 
     where
-      opts = LDB.defaultReadOptions
+      readOpts = LDB.defaultReadOptions
+        { LDB.useSnapshot = Just snapshot
+        }
+
+  lookupElems (DB db _) snapshot table field = unsafePerformIO $ do
+    ids <- startsWith db readOpts prefix
+    catMaybes <$> sequence
+      [ do
+          recordBS <- LDB.get db readOpts (keyTableRecord (pack table) batch index)
+          pure ((,) <$> pure (BC.drop prefixLength prefixedK) <*> recordBS)
+      | (prefixedK, indexBS) <- ids
+      , Right (batch, index) <- [ S.runGet S.get indexBS ]
+      ]
+    where
+      prefix = "i:" <> pack table <> ":" <> pack field <> ":"
+      prefixLength = BC.length prefix
+      readOpts = LDB.defaultReadOptions
         { LDB.useSnapshot = Just snapshot
         }
 
@@ -201,25 +217,6 @@ instance Backend DB where
         | (table, records) <- tables
         ]
 
-  tableSize (DB db _) snapshot table = unsafePerformIO $ do
-    sizeBS <- LDB.get db readOpts (keyTableSize (pack table))
-
-    case S.runGet S.get <$> sizeBS of
-      Just (Right size) -> pure size
-      _ -> pure 0
-    where
-      readOpts = LDB.defaultReadOptions
-        { LDB.useSnapshot = Just snapshot
-        }
-
-  tableRecords (DB db _) snapshot table = unsafePerformIO $ do
-    records <- startsWith db readOpts ("r:" <> pack table)
-    pure $ fmap snd records
-    where
-      readOpts = LDB.defaultReadOptions
-        { LDB.useSnapshot = Just snapshot
-        }
-
 --------------------------------------------------------------------------------
 
 testLDB = do
@@ -235,8 +232,9 @@ testLDB = do
       { LDB.createIfMissing = True
       }
 
-    lookupTest db snapshot = (name <$> person, fmap (fmap name) f')
+    lookupTest db snapshot = map (fmap (address . get) . employer . snd) ps --(name <$> person, fmap (fmap name) f')
       where
+        ps = elems (pid $ persons lookups)
         person = lookup (pid $ persons lookups) 3
         f' = (fmap get . friend) <$> person
         lookups = lookupFields db snapshot
