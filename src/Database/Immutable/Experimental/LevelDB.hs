@@ -212,7 +212,13 @@ instance Backend DB where
         { LDB.useSnapshot = Just snapshot
         }
 
-  tableRecords = undefined
+  tableRecords (DB db _) snapshot table = unsafePerformIO $ do
+    records <- startsWith db readOpts ("r:" <> pack table)
+    pure $ fmap snd records
+    where
+      readOpts = LDB.defaultReadOptions
+        { LDB.useSnapshot = Just snapshot
+        }
 
 --------------------------------------------------------------------------------
 
