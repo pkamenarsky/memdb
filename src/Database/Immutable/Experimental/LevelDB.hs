@@ -19,6 +19,7 @@ import qualified Data.ByteString.Char8 as BC
 import           Data.ByteString.Char8 (pack, unpack)
 import           Data.Maybe (fromMaybe, isJust)
 import           Data.Monoid ((<>))
+import qualified Data.List as L
 import qualified Data.Map as M
 import qualified Data.Serialize as S
 import           Data.Word
@@ -32,7 +33,7 @@ import qualified Database.LevelDB.Base as LDB
 
 import           System.IO.Unsafe (unsafePerformIO)
 
-import           Prelude hiding (lookup)
+import           Prelude hiding (lookup, length)
 
 tableBatch :: BC.ByteString
 tableBatch = "b"
@@ -190,7 +191,7 @@ instance Backend DB where
 
       tableCounts :: [SerializedTable] -> [(BC.ByteString, Word64)]
       tableCounts tables = 
-        [ (pack table, fromIntegral $ length records)
+        [ (pack table, fromIntegral $ L.length records)
         | (table, records) <- tables
         ]
 
@@ -211,6 +212,6 @@ testLDB = do
 
     lookupTest db snapshot = (name <$> person, fmap (fmap name) f')
       where
-        person = lookup (pid $ persons lookups) 3
+        person = lookup (pid $ persons lookups) 0
         f' = (fmap get . friend) <$> person
-        lookups = lookupTables db snapshot
+        lookups = lookupFields db snapshot

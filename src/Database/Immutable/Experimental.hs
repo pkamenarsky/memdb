@@ -66,7 +66,7 @@ type family Snd a where
 type TableName = String
 type FieldName = String
 
-data RecordMode = Resolved | Unresolved | forall table. LookupId table | Done
+data RecordMode = Resolved | Unresolved | forall table. LookupField table | Done
 
 data RecordId t where
   Id :: t -> RecordId t
@@ -92,7 +92,7 @@ type family Id (tables :: TableMode -> *) (recordMode :: RecordMode) t where
   Id tables 'Done t = RecordId t
   Id tables 'Resolved t = t
   Id tables 'Unresolved t = RecordId t
-  Id tables ('LookupId table) t = LookupFns tables table t
+  Id tables ('LookupField table) t = LookupFns tables table t
 
 data Lazy tables a = Lazy
   { get :: a tables 'Resolved
@@ -126,7 +126,7 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
   ForeignId tables 'Resolved table field = Lazy
     tables
     (Fst (LookupTableType table (Eot (tables 'Cannonical))))
-  ForeignId tables ('LookupId table') table field = ()
+  ForeignId tables ('LookupField table') table field = ()
 
 -- Backend ---------------------------------------------------------------------
 
@@ -169,18 +169,19 @@ class Backend backend where
        )
     -> IO ()
 
--- LookupById ------------------------------------------------------------------
+-- LookupField ------------------------------------------------------------------
 
-class GLookupById r where
+-- TODO: rename to LookupField
+class GLookupField r where
   gLookupById :: Backend db => db -> Snapshot db -> TableName -> r
 
-instance GLookupById () where
+instance GLookupField () where
   gLookupById _ _ _ = ()
 
-instance GLookupById r => GLookupById (Either r Void) where
+instance GLookupField r => GLookupField (Either r Void) where
   gLookupById db snapshot = Left . gLookupById db snapshot
 
-instance (GLookupById rs) => GLookupById (Named x r, rs) where
+instance (GLookupField rs) => GLookupField (Named x r, rs) where
   gLookupById db snapshot table
     = ( error "Ordinary fields are undefined for lookups"
       , gLookupById db snapshot table
@@ -191,11 +192,11 @@ instance {-# OVERLAPPING #-}
   , Serialize (table tables 'Unresolved)
 
   , Resolve tables table
-  , GLookupById rs
+  , GLookupField rs
 
   , KnownSymbol field
   ) =>
-  GLookupById (Named field (LookupFns tables table k), rs) where
+  GLookupField (Named field (LookupFns tables table k), rs) where
     gLookupById db snapshot table
       = ( Named $ LookupFns
             { lookup = \k -> (lookupRecord db snapshot table (symbolVal (Proxy :: Proxy field)) k)
@@ -203,51 +204,51 @@ instance {-# OVERLAPPING #-}
         , gLookupById db snapshot table
         )
 
-class LookupById tables (r :: (TableMode -> *) -> RecordMode -> *) where
-  lookupById :: Backend db => db -> Snapshot db -> TableName -> r tables ('LookupId r)
+class LookupField tables (r :: (TableMode -> *) -> RecordMode -> *) where
+  lookupById :: Backend db => db -> Snapshot db -> TableName -> r tables ('LookupField r)
   default lookupById
-    :: HasEot (r tables ('LookupId r))
-    => GLookupById (Eot (r tables ('LookupId r)))
+    :: HasEot (r tables ('LookupField r))
+    => GLookupField (Eot (r tables ('LookupField r)))
     => Backend db
     => db
     -> Snapshot db
     -> TableName
-    -> r tables ('LookupId r)
+    -> r tables ('LookupField r)
   lookupById db snapshot = fromEot . gLookupById db snapshot
 
 -- Lookup ----------------------------------------------------------------------
 
-class GLookupTables t where
-  gLookupTables :: Backend db => db -> Snapshot db -> t
+class GLookupFields t where
+  gLookupFields :: Backend db => db -> Snapshot db -> t
 
-instance GLookupTables () where
-  gLookupTables _ _ = ()
+instance GLookupFields () where
+  gLookupFields _ _ = ()
 
-instance GLookupTables t => GLookupTables (Either t Void) where
-  gLookupTables db = Left . gLookupTables db
+instance GLookupFields t => GLookupFields (Either t Void) where
+  gLookupFields db = Left . gLookupFields db
 
 instance
-  ( LookupById tables t
-  , GLookupTables ts
+  ( LookupField tables t
+  , GLookupFields ts
 
   , KnownSymbol name
   ) =>
-  GLookupTables (Named name (t tables ('LookupId t)), ts) where
-    gLookupTables db snapshot
+  GLookupFields (Named name (t tables ('LookupField t)), ts) where
+    gLookupFields db snapshot
       = ( Named $ lookupById db snapshot (symbolVal (Proxy :: Proxy name))
-        , gLookupTables db snapshot
+        , gLookupFields db snapshot
         )
 
-class LookupTables (t :: TableMode -> *) where
-  lookupTables :: Backend db => db -> Snapshot db -> t 'Lookup
-  default lookupTables
-    :: HasEot (t 'Lookup)
+class LookupFields (t :: TableMode -> *) where
+  lookupFields :: Backend db => db -> Snapshot db -> t 'LookupFields
+  default lookupFields
+    :: HasEot (t 'LookupFields)
     => Backend db
-    => GLookupTables (Eot (t 'Lookup))
+    => GLookupFields (Eot (t 'LookupFields))
     => db
     -> Snapshot db
-    -> t 'Lookup
-  lookupTables db = fromEot . gLookupTables db
+    -> t 'LookupFields
+  lookupFields db = fromEot . gLookupFields db
 
 -- Resolve ---------------------------------------------------------------------
 
@@ -448,7 +449,7 @@ class GatherIds (tables :: TableMode -> *) u where
     where
       (eids, r) = gGatherIds table offsets (toEot u)
 
--- Insert ----------------------------------------------------------------------
+-- Insert tables ---------------------------------------------------------------
 
 class GInsertTables t where
   gInsert
@@ -576,13 +577,19 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = Lookup | Batch | Cannonical
+data TableMode = LookupFields | LookupTables | Batch | Cannonical
 
-type family Table (tables :: TableMode -> *) (c :: TableMode) a where
-  Table tables 'Cannonical a = a tables 'Done
+data LookupTable tables table = LookupTable
+  { length :: Int
+  , elems :: [table tables 'Resolved]
+  }
 
-  Table tables 'Batch a = [a tables 'Unresolved]
-  Table tables 'Lookup a = a tables ('LookupId a)
+type family Table (tables :: TableMode -> *) (c :: TableMode) table where
+  Table tables 'Cannonical table = table tables 'Done
+
+  Table tables 'Batch table = [table tables 'Unresolved]
+  Table tables 'LookupFields table = table tables ('LookupField table)
+  Table tables 'LookupTables table = LookupTable tables table
 
 --------------------------------------------------------------------------------
 
@@ -592,7 +599,7 @@ data Person tables m = Person
   , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid :: Id tables m Word64
   , pid2 :: Id tables m String
-  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
+  } deriving (G.Generic, Resolve CompanyTables, LookupField CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
 deriving instance Show (Person CompanyTables 'Resolved)
@@ -605,7 +612,7 @@ data Employer tables m = Employer
   { address :: String
   , employees :: MaybeList (ForeignId tables m "persons" "pid")  -- could be turned into [~(Person Resolved)]
   , owner :: Id tables m String
-  } deriving (G.Generic, Resolve CompanyTables, LookupById CompanyTables, GatherIds CompanyTables)
+  } deriving (G.Generic, Resolve CompanyTables, LookupField CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
 deriving instance Show (Employer CompanyTables 'Resolved)
@@ -614,7 +621,7 @@ deriving instance Serialize (Employer CompanyTables 'Unresolved)
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic, LookupTables, InsertTables)
+  } deriving (G.Generic, LookupFields, InsertTables)
 
 --------------------------------------------------------------------------------
 
@@ -640,11 +647,11 @@ personR = undefined
 -- personR' :: Person CompanyTables 'Resolved
 -- personR' = resolve undefined personU
 
-personL :: Person CompanyTables ('LookupId Person)
+personL :: Person CompanyTables ('LookupField Person)
 personL = undefined
 
 -- companyLookups :: CompanyTables 'Lookup
--- companyLookups = lookupTables
+-- companyLookups = lookupFields
 
 companyI :: CompanyTables 'Batch
 companyI = CompanyTables
