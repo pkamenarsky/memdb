@@ -128,7 +128,7 @@ instance Backend DB where
         $ "Consistency violation: missing foreign ids: " <> show (map fst $ filter (not . snd) missingFidIds)
 
       case opts of
-        ErrorOnDuplicates -> do
+        ErrorOnDuplicateIndexes -> do
           anyDuplicateId <- or <$> sequence
             [ case eid of
                 EId field value -> idExists (pack table) (pack field) (serialize value)
@@ -198,7 +198,12 @@ instance Backend DB where
         | (table, records) <- tables
         ]
 
-  tableSize (DB db _) snapshot table = undefined
+  tableSize (DB db _) snapshot table = unsafePerformIO $ do
+    sizeBS <- LDB.get db readOpts (keyTableSize (pack table))
+
+    case S.runGet S.get <$> sizeBS of
+      Just (Right size) -> pure size
+      _ -> pure 0
     where
       readOpts = LDB.defaultReadOptions
         { LDB.useSnapshot = Just snapshot
@@ -210,7 +215,7 @@ instance Backend DB where
 
 testLDB = do
   withDB opts "ldb" $ \db -> do
-    insert db OverwriteDuplicates companyI
+    insert db OverwriteDuplicateIndexes companyI
 
     p <- withSnapshot db (lookupTest db)
 

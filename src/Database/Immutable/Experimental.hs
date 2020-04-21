@@ -132,8 +132,12 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 -- Backend ---------------------------------------------------------------------
 
 data InsertOptions
-  = OverwriteDuplicates
-  | ErrorOnDuplicates
+  = OverwriteDuplicateIndexes
+    -- ^ This will only overwrite the current indexes and point them at the new
+    -- record; the old record will still remain in the database and be accessible
+    -- when reading the batch it was added in.
+  | ErrorOnDuplicateIndexes
+    -- ^ Don't allow overwriting already existing indexes.
 
 type SerializedTable = (TableName, [([EId], B.ByteString)])
 
@@ -501,7 +505,7 @@ instance GInsertTables () where
   gInsert opts () srs _
     | not (null missingRelFids) = error $ "Consistency violation (gInsert): missing relative foreign ids: " <> show (ids, fids)
     | otherwise = case opts of
-        ErrorOnDuplicates
+        ErrorOnDuplicateIndexes
           | not (null duplicateIds) -> error "Consistency violation (gInsert): duplicate ids"
         _ -> (missingAbsFids, srs)
     where
@@ -571,7 +575,7 @@ class InsertTables (t :: TableMode -> *) where
   -- * All relative foreign ids must point to records inside the batch
   -- * Absolute foreign ids not pointing to records inside the batch must point to
   --   records already in the backend
-  -- * When `ErrorOnDuplicates` is specified, no duplicate ids are allowed
+  -- * When `ErrorOnDuplicateIndexes` is specified, no duplicate indexes are allowed
   --   (both in the batch and across the database)
   insert :: Backend db => db -> InsertOptions -> t 'Batch -> IO ()
   default insert
