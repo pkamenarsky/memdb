@@ -168,11 +168,13 @@ class Backend backend where
 
   tableSize
     :: backend
+    -> Snapshot backend
     -> TableName
     -> Int
 
   tableRecords
     :: backend
+    -> Snapshot backend
     -> TableName
     -> [B.ByteString]
 
@@ -602,10 +604,10 @@ instance
   GLookupTables (Named table (LookupTable tables t), ts) where
     gLookupTables db snapshot =
       ( Named $ LookupTable
-          { length = tableSize db (symbolVal (Proxy :: Proxy table))
+          { length = tableSize db snapshot (symbolVal (Proxy :: Proxy table))
           , elems =
               [ resolve db snapshot record
-              | recordBS <- tableRecords db (symbolVal (Proxy :: Proxy table))
+              | recordBS <- tableRecords db snapshot (symbolVal (Proxy :: Proxy table))
               , Right record <- [ S.runGet S.get recordBS ]
               ]
           }

@@ -104,76 +104,84 @@ instance Backend DB where
         }
 
   insertTables (DB db lock) opts f = do
-    (offsetMap, offsetMap', missingFids, tables, batch) <- modifyMVar lock $ \(offsetMap, batch) -> do
+    modifyMVar_ lock $ \(offsetMap, batch) -> do
       let (missingFids, tables) = f offsetMap
+          newOffsets = M.fromList
+            [ (unpack table, offset + count)
+            | (table, count) <- tableCounts tables
+            , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
+            ]
+          offsetMap' = newOffsets <> offsetMap
 
-      newOffsets <- sequence
-        [ do
-            LDB.put db writeOpts (keyTableSize table) (serialize (offset + count))
-            pure (unpack table, offset + count)
-        | (table, count) <- tableCounts tables
-        , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
+      missingFidIds <- sequence
+        [ (\x -> (v, x)) <$> idExists (pack table) (pack field) value
+        | v@(table, field, value) <- missingFids
         ]
 
-      let offsetMap' = M.fromList newOffsets <> offsetMap
+      -- TODO: cleanup
+      anyMissingFid <- not . and . fmap snd <$> sequence
+        [ (\x -> (v, x)) <$> idExists (pack table) (pack field) value
+        | v@(table, field, value) <- missingFids
+        ]
 
-      LDB.put db writeOpts keyTableBatch (serialize (batch + 1))
+      when (not $ and $ fmap snd missingFidIds) $ error
+        $ "Consistency violation: missing foreign ids: " <> show (map fst $ filter (not . snd) missingFidIds)
 
-      pure ((offsetMap', batch + 1), (offsetMap, offsetMap', missingFids, tables, batch))
-
-    missingFidIds <- sequence
-      [ (\x -> (v, x)) <$> idExists (pack table) (pack field) value
-      | v@(table, field, value) <- missingFids
-      ]
-
-    anyMissingFid <- not . and . fmap snd <$> sequence
-      [ (\x -> (v, x)) <$> idExists (pack table) (pack field) value
-      | v@(table, field, value) <- missingFids
-      ]
-
-    when (not $ and $ fmap snd missingFidIds) $ error $ "Consistency violation: missing foreign ids: " <> show (map fst $ filter (not . snd) missingFidIds)
-
-    case opts of
-      ErrorOnDuplicates -> do
-        anyDuplicateId <- or <$> sequence
-          [ case eid of
-              EId field value -> idExists (pack table) (pack field) (serialize value)
-              EAbsolutizedId field value -> idExists (pack table) (pack field) (serialize value)
-              _ -> pure True
-
-          | (table, records) <- tables
-          , (eids, _) <- records
-          , eid <- eids
-          ]
-
-        when anyDuplicateId $ error "Consistency violation: duplicate ids"
-      _ -> pure ()
-
-    sequence_
-      [ do
-          LDB.put db writeOpts (keyTableRecord (pack table) batch index) record
-
-          sequence
+      case opts of
+        ErrorOnDuplicates -> do
+          anyDuplicateId <- or <$> sequence
             [ case eid of
-                EId field value -> do
-                  print $ "Writing EId: " <> show value
-                  LDB.put db writeOpts (keyTableId (pack table) (pack field) (serialize value)) (serialize (batch, index))
-                EAbsolutizedId field value -> do
+                EId field value -> idExists (pack table) (pack field) (serialize value)
+                EAbsolutizedId field value -> idExists (pack table) (pack field) (serialize value)
+                _ -> pure True
 
-                  when (value > final) $ error "Consistency violation: relative id out of bounds"
-                  print $ "Writing EAbsolutizedId: " <> show value
-
-                  LDB.put db writeOpts (keyTableId (pack table) (pack field) (serialize value)) (serialize (batch, index))
-                _ -> pure ()
-            | eid <- eids
+            | (table, records) <- tables
+            , (eids, _) <- records
+            , eid <- eids
             ]
-      | (table, records) <- tables
 
-      , let offset = fromMaybe 0 $ M.lookup table offsetMap
-            final  = fromMaybe 0 $ M.lookup table offsetMap'
+          when anyDuplicateId $ error "Consistency violation: duplicate ids"
+        _ -> pure ()
 
-      , ((eids, record), index) <- zip records [offset..]
-      ]
+      let recordsBatch = sequence $ mconcat
+            [ Right (LDB.Put (keyTableRecord (pack table) batch index) record):mconcat
+                [ case eid of
+                    EId field value ->
+                      [ Right $ LDB.Put (keyTableId (pack table) (pack field) (serialize value)) (serialize (batch, index)) ]
+                    EAbsolutizedId field value
+                      | (value > final) ->
+                          [ Left "Consistency violation: relative id out of bounds" ]
+                      | otherwise ->
+                          [ Right $ LDB.Put (keyTableId (pack table) (pack field) (serialize value)) (serialize (batch, index)) ]
+                    _ -> []
+                | eid <- eids
+                ]
+            | (table, records) <- tables
+
+            , let offset = fromMaybe 0 $ M.lookup table offsetMap
+                  final  = fromMaybe 0 $ M.lookup table offsetMap'
+
+            , ((eids, record), index) <- zip records [offset..]
+            ]
+
+          newOffsetsBatch =
+            [ LDB.Put (keyTableSize table) (serialize (offset + count))
+            | (table, count) <- tableCounts tables
+            , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
+            ]
+      
+      LDB.write db writeOpts $ mconcat
+        [ newOffsetsBatch
+
+        , case recordsBatch of
+            Left e -> error e
+            Right recordsBatch' -> recordsBatch'
+
+        -- Batch index
+        , [ LDB.Put keyTableBatch (serialize (batch + 1)) ]
+        ]
+
+      pure (offsetMap', batch + 1)
 
     where
       idExists :: BC.ByteString -> BC.ByteString -> BC.ByteString -> IO Bool
@@ -190,7 +198,11 @@ instance Backend DB where
         | (table, records) <- tables
         ]
 
-  tableSize = undefined
+  tableSize (DB db _) snapshot table = undefined
+    where
+      readOpts = LDB.defaultReadOptions
+        { LDB.useSnapshot = Just snapshot
+        }
 
   tableRecords = undefined
 
