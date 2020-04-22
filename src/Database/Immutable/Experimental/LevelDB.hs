@@ -114,6 +114,7 @@ instance Backend DB where
     a <- f snapshot
     evaluate (force a)
 
+  {-# NOINLINE lookupRecord #-}
   lookupRecord (DB db _) snapshot table field k = unsafePerformIO $ do
     indexBS <- LDB.get db readOpts (keyTableId (pack table) (pack field) k)
 
@@ -127,6 +128,7 @@ instance Backend DB where
         { LDB.useSnapshot = Just snapshot
         }
 
+  {-# NOINLINE lookupElems #-}
   lookupElems (DB db _) snapshot table field = unsafePerformIO $ do
     -- TODO: destroyIter
     i <- LDB.createIter db readOpts
@@ -300,6 +302,7 @@ instance Backend DB where
         { LDB.useSnapshot = Just snapshot
         }
 
+  {-# NOINLINE readBatches #-}
   readBatches (DB db _) snapshot = unsafePerformIO $ do
     i <- LDB.createIter db readOpts
     -- LDB.withIter db readOpts $ \i -> do
