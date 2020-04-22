@@ -59,7 +59,7 @@ instance Backend DB where
     let newHandles = newHandles' <> handles
 
     sequence_
-      [ BC.hPut handle (record <> "\n")
+      [ BC.hPut handle record
       | (table, records) <- srs
       , Just handle <- [ M.lookup table newHandles ]
       , (_, record) <- records
