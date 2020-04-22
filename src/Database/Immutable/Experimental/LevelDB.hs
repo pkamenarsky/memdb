@@ -157,9 +157,9 @@ instance Backend DB where
     modifyMVar_ lock $ \(offsetMap, batch) -> do
       let (missingFids, tables) = f offsetMap
           newOffsets = M.fromList
-            [ (unpack table, offset + count)
-            | (table, count) <- tableCounts tables
-            , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
+            [ (table, offset + fromIntegral (L.length records))
+            | (table, records) <- tables
+            , let offset = fromMaybe 0 $ M.lookup table offsetMap
             ]
           offsetMap' = newOffsets <> offsetMap
 
@@ -215,9 +215,8 @@ instance Backend DB where
             ]
 
           newOffsetsBatch =
-            [ LDB.Put (keyTableSize table) (serialize (offset + count))
-            | (table, count) <- tableCounts tables
-            , let offset = fromMaybe 0 $ M.lookup (unpack table) offsetMap
+            [ LDB.Put (keyTableSize (pack table)) (serialize newOffset)
+            | (table, newOffset) <- M.toList offsetMap'
             ]
       
       LDB.write db writeOpts $ mconcat
@@ -241,12 +240,6 @@ instance Backend DB where
       readOpts = LDB.defaultReadOptions
         { LDB.useSnapshot = Nothing
         }
-
-      tableCounts :: [SerializedTable] -> [(BC.ByteString, Word64)]
-      tableCounts tables = 
-        [ (pack table, fromIntegral $ L.length records)
-        | (table, records) <- tables
-        ]
 
   readBatchesIO (DB db _) snapshot = do
     -- TODO: destroyIter
