@@ -142,6 +142,8 @@ data InsertOptions
 
 type SerializedTable = (TableName, [([EId], B.ByteString)])
 
+newtype Stream a = Stream (IO (Maybe (a, Stream a)))
+
 class Backend backend where
   type Snapshot backend
 
@@ -183,6 +185,11 @@ class Backend backend where
     :: backend
     -> Snapshot backend
     -> [M.Map TableName [B.ByteString]]
+
+  readBatchesIO
+    :: backend
+    -> Snapshot backend
+    -> IO (Stream (M.Map TableName [B.ByteString]))
 
 unsafeLookupRecord
   :: Serialize k
@@ -254,7 +261,7 @@ class LookupField tables (r :: (TableMode -> *) -> RecordMode -> *) where
     -> r tables ('LookupField r)
   lookupField db snapshot = fromEot . gLookupById db snapshot
 
--- Lookup ----------------------------------------------------------------------
+-- LookupFields ----------------------------------------------------------------
 
 class GLookupFields t where
   gLookupFields :: Backend db => db -> Snapshot db -> t
@@ -617,16 +624,65 @@ class InsertTables (t :: TableMode -> *) where
   --   records already in the backend
   -- * When `ErrorOnDuplicateIndexes` is specified, no duplicate indexes are allowed
   --   (both in the batch and across the database)
-  insert :: Backend db => db -> InsertOptions -> t 'Batch -> IO ()
+  insert :: Backend db => db -> InsertOptions -> t ('Batch 'Unresolved) -> IO ()
   default insert
     :: Backend db
-    => HasEot (t 'Batch)
-    => GInsertTables (Eot (t 'Batch))
+    => HasEot (t ('Batch 'Unresolved))
+    => GInsertTables (Eot (t ('Batch 'Unresolved)))
     => db
     -> InsertOptions
-    -> t 'Batch
+    -> t ('Batch 'Unresolved)
     -> IO ()
   insert db opts batch = insertTables db opts (gInsert opts (toEot batch) [])
+
+-- ReadBatches -----------------------------------------------------------------
+
+class GReadBatches t where
+  gReadBatches
+    :: Backend db
+    => db
+    -> Snapshot db
+    -> [M.Map TableName [B.ByteString]]
+    -> t
+
+instance GReadBatches () where
+  gReadBatches _ _ _ = ()
+
+instance GReadBatches t => GReadBatches (Either t Void) where
+  gReadBatches db snapshot = Left . gReadBatches db snapshot
+
+instance
+  ( GReadBatches ts
+
+  , Serialize (r tables 'Unresolved)
+  , Resolve tables r
+
+  , KnownSymbol table
+  ) =>
+  GReadBatches (Named table [r tables 'Resolved], ts) where
+    gReadBatches db snapshot batches =
+      ( Named
+          [ resolve db snapshot record 
+          | batch <- batches
+          , Just records <- [ M.lookup (symbolVal (Proxy :: Proxy table)) batch ]
+          , recordBS <- records
+          , Right record <- [ S.runGet S.get recordBS ]
+          ]
+      , gReadBatches db snapshot batches
+      )
+
+class ReadBatches (t :: TableMode -> *) where
+  readBatches' :: Backend db => db -> Snapshot db -> t ('Batch 'Resolved)
+  default readBatches'
+    :: Backend db
+    => HasEot (t ('Batch 'Resolved))
+    => GReadBatches (Eot (t ('Batch 'Resolved)))
+    => db
+    -> Snapshot db
+    -> t ('Batch 'Resolved)
+  readBatches' db snapshot = fromEot $ gReadBatches db snapshot batches
+    where
+      batches = readBatches db snapshot
 
 -- Expand ----------------------------------------------------------------------
 
@@ -657,12 +713,12 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = LookupFields | Batch | Cannonical
+data TableMode = LookupFields | forall r. Batch r | Cannonical
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) table where
   Table tables 'Cannonical table = table tables 'Done
 
-  Table tables 'Batch table = [table tables 'Unresolved]
+  Table tables ('Batch r) table = [table tables r]
   Table tables 'LookupFields table = table tables ('LookupField table)
 
 --------------------------------------------------------------------------------
@@ -696,7 +752,9 @@ deriving instance Serialize (Employer CompanyTables 'Unresolved)
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic, LookupFields, InsertTables)
+  } deriving (G.Generic, LookupFields, InsertTables, ReadBatches)
+
+deriving instance Show (CompanyTables ('Batch 'Resolved))
 
 --------------------------------------------------------------------------------
 
@@ -733,7 +791,7 @@ personL = undefined
 -- companyLookups :: CompanyTables 'Lookup
 -- companyLookups = lookupFields
 
-companyI :: CompanyTables 'Batch
+companyI :: CompanyTables ('Batch 'Unresolved)
 companyI = CompanyTables
   { persons = [personU]
   , employers = [employerU]

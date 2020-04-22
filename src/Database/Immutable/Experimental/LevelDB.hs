@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -31,9 +32,11 @@ import qualified Database.LevelDB.Iterator as LDB
 import qualified Database.LevelDB.Streaming as LDB
 import qualified Database.LevelDB.Base as LDB
 
-import           System.IO.Unsafe (unsafePerformIO)
+import           System.IO.Unsafe
 
 import           Prelude hiding (lookup, length)
+
+import           Debug.Trace
 
 keyTableBatch :: BC.ByteString
 keyTableBatch = "b"
@@ -41,9 +44,9 @@ keyTableBatch = "b"
 keyTableSize :: BC.ByteString -> BC.ByteString
 keyTableSize table = "s:" <> table
 
--- table:batch:index -> record
+-- batch:table:index -> record
 keyTableRecord :: BC.ByteString -> Word64 -> Word64 -> BC.ByteString
-keyTableRecord table batch index = "r:" <> table <> ":" <> serialize batch <> ":" <> serialize index
+keyTableRecord table batch index = "r:" <> serialize batch <> ":" <> table <> ":" <> serialize index
 
 -- table:field:fieldValue -> (batch, index)
 keyTableId :: BC.ByteString -> BC.ByteString -> BC.ByteString -> BC.ByteString
@@ -86,7 +89,16 @@ withDB opts path f = LDB.withDB path opts $ \db -> do
       where
         prefixLength = BC.length prefix
 
-newtype Stream a = Stream (IO (Maybe (a, Stream a)))
+-- newtype Stream a = Stream (IO (Maybe (a, Stream a)))
+
+printStream :: Show a => Stream a -> IO ()
+printStream (Stream io) = do
+  a <- io
+  case a of
+    Nothing -> pure ()
+    Just (a', next) -> do
+      print a'
+      printStream next
 
 streamToLazyList :: Stream a -> IO [a]
 streamToLazyList (Stream io) = do
@@ -238,40 +250,51 @@ instance Backend DB where
         | (table, records) <- tables
         ]
 
-  readBatches (DB db _) snapshot = unsafePerformIO $
-    LDB.withIter db readOpts $ \i -> do
-      LDB.iterSeek i prefix
-      streamToLazyList (go i 0)
+  readBatchesIO (DB db _) snapshot = do
+    i <- LDB.createIter db readOpts
+    -- LDB.withIter db readOpts $ \i -> do
+    LDB.iterSeek i prefix
+    pure $ go i 0
     where
-      readWhile :: LDB.Iterator -> Word64 -> IO (Either () (Maybe (TableName, BC.ByteString)))
-      readWhile i batchIndex = do
+      readBatch :: LDB.Iterator -> Word64 -> [(TableName, BC.ByteString)] -> IO (Maybe (Either [(TableName, BC.ByteString)] [(TableName, BC.ByteString)]))
+      readBatch i batchIndex acc = do
         entryBS <- LDB.iterEntry i
 
-        case entryBS of
-          Nothing -> pure $ Left ()
-          Just (k, v) -> case parseKey k of
-            (table, tableBatchIndex)
-              | batchIndex == tableBatchIndex -> pure $ Right $ Just (table, v)
-              | otherwise -> pure $ Right Nothing
-
-      readBatch :: LDB.Iterator -> Word64 -> IO (Maybe [(TableName, BC.ByteString)])
-      readBatch i batchIndex = do
-        entryBS <- LDB.iterEntry i
         case entryBS of
           Nothing -> pure Nothing
           Just (k, v) -> case parseKey k of
-            (table, tableBatch) -> undefined
+            Just (table, tableBatch)
+              -- | trace (show batchIndex <> ", " <> show tableBatch) False -> undefined
+              | batchIndex == tableBatch -> do
+                  LDB.iterNext i
+                  readBatch i batchIndex (acc <> [(table, v)])
+              | otherwise -> pure (Just $ Left acc)
+            Nothing -> pure (Just $ Right acc)
 
-      parseKey :: BC.ByteString -> (TableName, Word64)
-      parseKey = undefined
+      parseKey :: BC.ByteString -> Maybe (TableName, Word64)
+      parseKey k
+        | BC.take prefixLength k == prefix
+        , Right batch <- batch' = Just (unpack table, batch)
+        | otherwise = Nothing
+        where
+          k' = BC.drop prefixLength k
+          (batchBS, k'') = BC.span (/= ':') k'
+          batch' = S.runGet S.get batchBS
+          table = BC.takeWhile (/= ':') (BC.drop 1 k'')
 
       go :: LDB.Iterator -> Word64 -> Stream (M.Map TableName [BC.ByteString])
       go i batchIndex = Stream $ do
-        batch' <- readBatch i batchIndex
+        batch' <- readBatch i batchIndex []
 
         case batch' of
           Nothing -> pure Nothing
-          Just batch -> pure $ Just (batchMap, go i (batchIndex + 1))
+          Just (Left batch) -> pure $ Just (batchMap, go i (batchIndex + 1))
+            where
+              batchMap = M.fromListWith (<>)
+                [ (table, [record])
+                | (table, record) <- batch
+                ]
+          Just (Right batch) -> pure $ Just (batchMap, Stream (pure Nothing))
             where
               batchMap = M.fromListWith (<>)
                 [ (table, [record])
@@ -279,6 +302,65 @@ instance Backend DB where
                 ]
         
       prefix = "r:"
+      prefixLength = BC.length prefix
+
+      readOpts = LDB.defaultReadOptions
+        { LDB.useSnapshot = Just snapshot
+        }
+
+  readBatches (DB db _) snapshot = unsafePerformIO $ do
+    i <- LDB.createIter db readOpts
+    -- LDB.withIter db readOpts $ \i -> do
+    LDB.iterSeek i prefix
+    streamToLazyList (go i 0)
+    where
+      readBatch :: LDB.Iterator -> Word64 -> [(TableName, BC.ByteString)] -> IO (Maybe (Either [(TableName, BC.ByteString)] [(TableName, BC.ByteString)]))
+      readBatch i batchIndex acc = do
+        entryBS <- LDB.iterEntry i
+
+        case entryBS of
+          Nothing -> pure Nothing
+          Just (k, v) -> case parseKey k of
+            Just (table, tableBatch)
+              -- | trace (show batchIndex <> ", " <> show tableBatch) False -> undefined
+              | batchIndex == tableBatch -> do
+                  LDB.iterNext i
+                  readBatch i batchIndex (acc <> [(table, v)])
+              | otherwise -> pure (Just $ Left acc)
+            Nothing -> pure (Just $ Right acc)
+
+      parseKey :: BC.ByteString -> Maybe (TableName, Word64)
+      parseKey k
+        | BC.take prefixLength k == prefix
+        , Right batch <- batch' = Just (unpack table, batch)
+        | otherwise = Nothing
+        where
+          k' = BC.drop prefixLength k
+          (batchBS, k'') = BC.span (/= ':') k'
+          batch' = S.runGet S.get batchBS
+          table = BC.takeWhile (/= ':') (BC.drop 1 k'')
+
+      go :: LDB.Iterator -> Word64 -> Stream (M.Map TableName [BC.ByteString])
+      go i batchIndex = Stream $ do
+        batch' <- readBatch i batchIndex []
+
+        case batch' of
+          Nothing -> pure Nothing
+          Just (Left batch) -> pure $ Just (batchMap, go i (batchIndex + 1))
+            where
+              batchMap = M.fromListWith (<>)
+                [ (table, [record])
+                | (table, record) <- batch
+                ]
+          Just (Right batch) -> pure $ Just (batchMap, Stream (pure Nothing))
+            where
+              batchMap = M.fromListWith (<>)
+                [ (table, [record])
+                | (table, record) <- batch
+                ]
+        
+      prefix = "r:"
+      prefixLength = BC.length prefix
 
       readOpts = LDB.defaultReadOptions
         { LDB.useSnapshot = Just snapshot
@@ -290,7 +372,7 @@ testLDB = do
   withDB opts "ldb" $ \db -> do
     insert db OverwriteDuplicateIndexes companyI
 
-    p <- withSnapshot db (pure . lookupTest db)
+    p <- withSnapshot db (lookupTest db)
 
     print p
     putStrLn "DONE"
@@ -299,9 +381,16 @@ testLDB = do
       { LDB.createIfMissing = True
       }
 
-    lookupTest db snapshot = map (fmap (address . get) . employer . snd) ps --(name <$> person, fmap (fmap name) f')
+    lookupTest db snapshot = do
+      -- batches' <- readBatchesIO db snapshot
+      -- printStream batches'
+      print batches
+      -- pure $ map (fmap (address . get) . employer . snd) ps --(name <$> person, fmap (fmap name) f')
+      pure $ fmap (owner . snd) es
       where
         ps = elems (pid $ persons lookups)
+        es = elems (owner $ employers lookups)
         person = lookup (pid $ persons lookups) 3
         f' = (fmap get . friend) <$> person
         lookups = lookupFields db snapshot
+        batches = readBatches' db snapshot :: CompanyTables ('Batch 'Resolved)
