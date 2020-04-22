@@ -128,26 +128,24 @@ instance Backend DB where
         }
 
   lookupElems (DB db _) snapshot table field = unsafePerformIO $ do
-    ids <- startsWith db readOpts prefix
-    catMaybes <$> sequence
-      [ do
-          recordBS <- LDB.get db readOpts (keyTableRecord (pack table) batch index)
-          pure ((,) <$> pure (BC.drop prefixLength prefixedK) <*> recordBS)
-      | (prefixedK, indexBS) <- ids
-      , Right (batch, index) <- [ S.runGet S.get indexBS ]
-      ]
-    -- LDB.withIter db readOpts $ \i -> do
-    --   LDB.iterSeek i prefix
-    --   undefined
+    -- TODO: destroyIter
+    i <- LDB.createIter db readOpts
+    LDB.iterSeek i prefix
+
+    streamToLazyList (go i)
+
     where
-      go i = do
-        a <- LDB.iterEntry i
-        case a of
-          Just a' -> do
-            pure $ undefined:(unsafePerformIO $ do
-              LDB.iterNext i
-              go i
-                             )
+      go i = Stream $ do
+        entry <- LDB.iterEntry i
+
+        case entry of
+          Just (k, indexBS)
+            | BC.take prefixLength k /= prefix -> pure Nothing
+            | Right (batch, index) <- S.runGet S.get indexBS -> do
+                Just recordBS <- LDB.get db readOpts (keyTableRecord (pack table) batch index)
+                LDB.iterNext i
+                pure $ Just ((BC.drop prefixLength k, recordBS), go i)
+          _ -> pure Nothing
 
       prefix = "i:" <> pack table <> ":" <> pack field <> ":"
       prefixLength = BC.length prefix
@@ -251,6 +249,7 @@ instance Backend DB where
         ]
 
   readBatchesIO (DB db _) snapshot = do
+    -- TODO: destroyIter
     i <- LDB.createIter db readOpts
     -- LDB.withIter db readOpts $ \i -> do
     LDB.iterSeek i prefix
@@ -386,7 +385,7 @@ testLDB = do
       -- printStream batches'
       print batches
       -- pure $ map (fmap (address . get) . employer . snd) ps --(name <$> person, fmap (fmap name) f')
-      pure $ fmap (owner . snd) es
+      pure $ fmap (name . snd) ps
       where
         ps = elems (pid $ persons lookups)
         es = elems (owner $ employers lookups)
