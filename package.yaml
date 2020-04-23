@@ -28,6 +28,7 @@ dependencies:
 - deepseq
 - generics-eot
 - leveldb-haskell
+- monoidal-containers
 - vector
 
 library:
