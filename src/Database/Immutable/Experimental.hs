@@ -44,9 +44,16 @@ import           Prelude hiding (id, lookup, length)
 -- DONE: absolute/relative ids
 -- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
 -- DONE: consistency checks (must be done on insert, want early abort/error reporting)
+-- DONE: simplify lookupRecord (only operate on ByteStrings, keep Backend simple)
+-- DONE: batches
 
--- TODO: batches
--- TODO: simplify lookupRecord (only operate on ByteStrings, keep Backend simple)
+-- DONE: insert -> insertTables
+-- DONE: ModifyTables
+
+-- TODO: resolve with internal batch ids, then go to db
+-- TODO: ResolveError
+
+-- TODO: ReadBatches returns only 'Unresolved tables, use ResolveTables to resolve
 
 -- TODO: error -> MonadError
 -- TODO: record <-> table naming
@@ -402,6 +409,14 @@ class Resolve (tables :: TableMode -> *) u where
     -> u tables 'Resolved
   resolve db snapshot = fromEot . gResolve db snapshot . toEot
 
+-- ResolveTables ---------------------------------------------------------------
+
+-- TODO: resolve with internal batch ids, then go to db
+-- TODO: ResolveError
+
+class ResolveTables t where
+  resolveTables :: Backend db => db -> Snapshot db -> t ('Batch 'Unresolved) -> t ('Batch 'Resolved)
+
 -- GatherIds -------------------------------------------------------------------
 
 type OffsetMap = M.Map String Word64
@@ -536,10 +551,10 @@ class GatherIds (tables :: TableMode -> *) u where
     where
       (eids, r) = gGatherIds table offsets (toEot u)
 
--- Insert tables ---------------------------------------------------------------
+-- SerializeTables -------------------------------------------------------------
 
-class GInsertTables t where
-  gInsert
+class GSerializeTables t where
+  gSerializeTables
     :: InsertOptions
     -> t
     -> [SerializedTable]
@@ -548,12 +563,12 @@ class GInsertTables t where
        , [SerializedTable]                      -- ^ Absolutized, serialized tables
        )
 
-instance GInsertTables () where
-  gInsert opts () srs _
-    | not (null missingRelFids) = error $ "Consistency violation (gInsert): missing relative foreign ids: " <> show (ids, fids)
+instance GSerializeTables () where
+  gSerializeTables opts () srs _
+    | not (null missingRelFids) = error $ "Consistency violation (gSerializeTables): missing relative foreign ids: " <> show (ids, fids)
     | otherwise = case opts of
         ErrorOnDuplicateIndexes
-          | not (null duplicateIds) -> error "Consistency violation (gInsert): duplicate ids"
+          | not (null duplicateIds) -> error "Consistency violation (gSerializeTables): duplicate ids"
         _ -> (missingAbsFids, srs)
     where
       allEids :: [(TableName, EId)]
@@ -597,24 +612,26 @@ instance GInsertTables () where
       missingAbsFids = [ (table, field, k) | (table, field, True, k) <- missingFids ]
       missingRelFids = [ fid | fid@(_, _, False, _) <- missingFids ]
 
-instance GInsertTables t => GInsertTables (Either t Void) where
-  gInsert opts (Left t) srs offsets = gInsert opts t srs offsets 
-  gInsert _ _ _ _ = undefined
+instance GSerializeTables t => GSerializeTables (Either t Void) where
+  gSerializeTables opts (Left t) srs offsets = gSerializeTables opts t srs offsets 
+  gSerializeTables _ _ _ _ = undefined
 
 instance
   ( Serialize (r tables 'Unresolved)
 
   , GatherIds tables r
-  , GInsertTables ts
+  , GSerializeTables ts
 
   , KnownSymbol table
   ) =>
-  GInsertTables (Named table [r tables 'Unresolved], ts) where
-    gInsert opts (Named records, ts) srs offsets 
-      = gInsert opts ts ((table, srsTable):srs) offsets 
+  GSerializeTables (Named table [r tables 'Unresolved], ts) where
+    gSerializeTables opts (Named records, ts) srs offsets 
+      = gSerializeTables opts ts ((table, srsTable):srs) offsets 
       where
         table = symbolVal (Proxy :: Proxy table)
         srsTable = [ serialize <$> gatherIds table offsets r | r <- records ]
+
+-- InsertTables ----------------------------------------------------------------
 
 class InsertTables (t :: TableMode -> *) where
   -- | Consistency checks:
@@ -628,12 +645,17 @@ class InsertTables (t :: TableMode -> *) where
   default insert
     :: Backend db
     => HasEot (t ('Batch 'Unresolved))
-    => GInsertTables (Eot (t ('Batch 'Unresolved)))
+    => GSerializeTables (Eot (t ('Batch 'Unresolved)))
     => db
     -> InsertOptions
     -> t ('Batch 'Unresolved)
     -> IO ()
-  insert db opts batch = insertTables db opts (gInsert opts (toEot batch) [])
+  insert db opts batch = insertTables db opts (gSerializeTables opts (toEot batch) [])
+
+-- ModifyTables -----------------------------------------------------------------
+
+class ModifyTables (t :: TableMode -> *) where
+  modifyTables :: t 'Modify -> t ('Batch 'Unresolved) -> f ('Batch 'Unresolved)
 
 -- ReadBatches -----------------------------------------------------------------
 
@@ -671,16 +693,40 @@ instance
       , gReadBatches db snapshot batches
       )
 
+instance
+  ( GReadBatches ts
+
+  , Serialize (r tables 'Unresolved)
+
+  , KnownSymbol table
+  ) =>
+  GReadBatches (Named table [r tables 'Unresolved], ts) where
+    gReadBatches db snapshot batches =
+      ( Named undefined
+          -- [ resolve db snapshot record 
+          -- | batch <- batches
+          -- , Just records <- [ M.lookup (symbolVal (Proxy :: Proxy table)) batch ]
+          -- , recordBS <- records
+          -- , Right record <- [ S.runGet S.get recordBS ]
+          -- ]
+      , gReadBatches db snapshot batches
+      )
+
 class ReadBatches (t :: TableMode -> *) where
-  readBatches' :: Backend db => db -> Snapshot db -> t ('Batch 'Resolved)
+  readBatches' :: Backend db => db -> Snapshot db -> (t ('Batch 'Unresolved), t ('Batch 'Resolved))
   default readBatches'
     :: Backend db
+    => HasEot (t ('Batch 'Unresolved))
     => HasEot (t ('Batch 'Resolved))
+    => GReadBatches (Eot (t ('Batch 'Unresolved)))
     => GReadBatches (Eot (t ('Batch 'Resolved)))
     => db
     -> Snapshot db
-    -> t ('Batch 'Resolved)
-  readBatches' db snapshot = fromEot $ gReadBatches db snapshot batches
+    -> (t ('Batch 'Unresolved), t ('Batch 'Resolved))
+  readBatches' db snapshot =
+    ( fromEot $ gReadBatches db snapshot batches
+    , fromEot $ gReadBatches db snapshot batches
+    )
     where
       batches = readBatches db snapshot
 
@@ -713,13 +759,14 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = LookupFields | forall r. Batch r | Cannonical
+data TableMode = LookupFields | forall r. Batch r | Cannonical | Modify
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) table where
   Table tables 'Cannonical table = table tables 'Done
 
   Table tables ('Batch r) table = [table tables r]
   Table tables 'LookupFields table = table tables ('LookupField table)
+  Table tables 'Modify table = (table tables 'Unresolved -> Maybe (table tables 'Unresolved))
 
 --------------------------------------------------------------------------------
 
