@@ -17,6 +17,7 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Database.Immutable.Experimental where
@@ -28,10 +29,11 @@ import           Data.Foldable (Foldable, toList)
 import qualified Data.Map as M
 import qualified Data.Map.Monoidal as MM
 import           Data.Maybe (fromJust, fromMaybe)
-import           Data.Semigroup (Sum (Sum), Last (Last))
+import           Data.Semigroup (Semigroup, Sum (Sum), Last (Last))
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
+import           Data.Validation (Validation (..))
 import qualified Data.Set as S
 import           Data.Word (Word64)
 
@@ -330,60 +332,66 @@ class LookupFields (t :: TableMode -> *) where
 
 -- Resolve ---------------------------------------------------------------------
 
+newtype ResolveError = ResolveError [EId]
+  deriving (Monoid, Semigroup)
+
 class GResolve u r where
   gResolve
-    :: Backend db
-    => db
-    -> Snapshot db
-    -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
+    :: MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
     -> u
-    -> r
+    -> Validation ResolveError r
 
 instance GResolve () () where
-  gResolve _ _ _ () = ()
+  gResolve _ () = Success ()
 
 instance GResolve Void Void where
-  gResolve _ _ _ _ = undefined
+  gResolve _ _ = undefined
 
 instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
-  gResolve db snapshot rsvMap (Left u) = Left $ gResolve db snapshot rsvMap u 
-  gResolve db snapshot rsvMap (Right u) = Right $ gResolve db snapshot rsvMap u 
+  gResolve rsvMap (Left u) = Left <$> gResolve rsvMap u 
+  gResolve rsvMap (Right u) = Right <$> gResolve rsvMap u 
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve db snapshot rsvMap (u, us) = (u, gResolve db snapshot rsvMap us)
+  gResolve rsvMap (u, us) = (u,) <$> gResolve rsvMap us
 
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
-  gResolve db snapshot rsvMap (Named (Id u), us) = (Named u, gResolve db snapshot rsvMap us)
-  gResolve db snapshot rsvMap (Named (RelativeId u), us) = (Named u, gResolve db snapshot rsvMap us)
+  gResolve rsvMap (Named (Id u), us) = (Named u,) <$> gResolve rsvMap us
+  gResolve rsvMap (Named (RelativeId u), us) = (Named u,) <$> gResolve rsvMap us
 
 instance
   ( Serialize u
   , Serialize (r tables 'Unresolved)
+  , Show u
 
-  , Resolve tables r
+  , Resolve (tables :: TableMode -> *) r
   , GResolve us rs
 
   , KnownSymbol table
   , KnownSymbol field
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-    gResolve db snapshot rsvMap (Named (ForeignId k), us)
-      = ( Named $ Lazy $ case rsvRecord of
-            Just record' -> resolve db snapshot rsvMap $ unsafeParse record' -- try rsvMap first
-            Nothing -> fromJust $ unsafeLookupRecord db snapshot rsvMap table field k -- else, try backend
-
-        , gResolve db snapshot rsvMap us
-        )
+    gResolve rsvMap (Named eid, us)
+      = (,) <$> rsv <*> gResolve rsvMap us
       where
+        rsv = case rsvRecord of
+          Just record' -> fmap (Named . Lazy) $ resolve rsvMap $ unsafeParse record'
+          Nothing -> Failure $ ResolveError
+            [ case eid of
+                ForeignId k -> EForeignId table field k
+                ForeignRelativeId k -> EForeignRelativeId table field k
+            ]
+
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
+
+        value = case eid of
+          ForeignId k -> (True, serialize k)
+          ForeignRelativeId k -> (False, serialize k)
 
         rsvRecord
           =   M.lookup table (MM.getMonoidalMap rsvMap)
           >>= M.lookup field . MM.getMonoidalMap
-          >>= M.lookup (True, serialize k) . MM.getMonoidalMap
-      
-    gResolve _ _ _ (Named (ForeignRelativeId _), _) = error "gResolve: ForeignRelativeId"
+          >>= M.lookup value . MM.getMonoidalMap
 
 instance
   ( Serialize u
@@ -398,11 +406,11 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve db snapshot rsvMap (Named k', us) =
-      ( Named $ flip fmap k' $ \(ForeignId k) ->
-          Lazy $ fromJust $ unsafeLookupRecord db snapshot rsvMap table field k
-      , gResolve db snapshot rsvMap us
-      )
+    gResolve rsvMap (Named k', us) = undefined
+      -- ( Named $ flip fmap k' $ \(ForeignId k) ->
+      --     Lazy $ fromJust $ unsafeLookupRecord db snapshot rsvMap table field k
+      -- , gResolve db snapshot rsvMap us
+      -- )
       where
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
@@ -419,10 +427,9 @@ instance
   , GResolve us rs
   ) =>
   GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
-    gResolve db snapshot rsvMap (Named u, us)
-      = ( Named $ resolve db snapshot rsvMap u
-        , gResolve db snapshot rsvMap us
-        )
+    gResolve rsvMap (Named u, us)
+      = (,) <$> fmap Named (resolve rsvMap u)
+            <*> gResolve rsvMap us
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -434,9 +441,8 @@ instance
   ) =>
   GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
     gResolve db snapshot rsvMap (Named u, us)
-      = ( Named $ fmap (resolve db snapshot rsvMap) u
-        , gResolve db snapshot rsvMap us
-        )
+      = (,) <$> undefined -- fmap (fmap Named) (fmap (resolve db snapshot rsvMap) u)
+            <*> gResolve db snapshot rsvMap us
 
 class Resolve (tables :: TableMode -> *) u where
   resolve
@@ -445,7 +451,7 @@ class Resolve (tables :: TableMode -> *) u where
     -> Snapshot db
     -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
     -> u tables 'Unresolved
-    -> u tables 'Resolved
+    -> Validation ResolveError (u tables 'Resolved)
   default resolve
     :: HasEot (u tables 'Unresolved)
     => HasEot (u tables 'Resolved)
@@ -455,13 +461,11 @@ class Resolve (tables :: TableMode -> *) u where
     -> Snapshot db
     -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
     -> u tables 'Unresolved
-    -> u tables 'Resolved
-  resolve db snapshot rsvMap = fromEot . gResolve db snapshot rsvMap . toEot
+    -> Validation ResolveError (u tables 'Resolved)
+  resolve db snapshot rsvMap = fmap fromEot . gResolve db snapshot rsvMap . toEot
 
 -- ResolveTables ---------------------------------------------------------------
 
--- TODO: resolve with internal batch ids, then go to db
--- TODO: ResolveError
 class GResolveTables u t where
   gResolveTables
     :: Backend db
@@ -484,7 +488,7 @@ instance
   , Resolve tables t 
   ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
     gResolveTables db snapshot rsvMap (Named ts, us) =
-      ( Named $ fmap (resolve db snapshot rsvMap) ts
+      ( undefined -- Named $ fmap (resolve db snapshot rsvMap) ts
       , gResolveTables db snapshot rsvMap us
       )
 
@@ -580,8 +584,10 @@ absolutizeForeignId offsets (ForeignRelativeId t)
 
 data EId
   = forall t. (Show t, Serialize t) => EId FieldName t
+  | ERelativeId FieldName Word64
   | EAbsolutizedId FieldName Word64
   | forall t. (Show t, Serialize t) => EForeignId TableName FieldName t
+  | EForeignRelativeId TableName FieldName Word64
   | EForeignAbsolutizedId TableName FieldName Word64
 
 deriving instance Show EId

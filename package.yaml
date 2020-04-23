@@ -29,6 +29,7 @@ dependencies:
 - generics-eot
 - leveldb-haskell
 - monoidal-containers
+- validation
 - vector
 
 library:
