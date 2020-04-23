@@ -41,22 +41,31 @@ import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fro
 
 import           Prelude hiding (id, lookup, length)
 
--- DONE: absolute/relative ids
--- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
--- DONE: consistency checks (must be done on insert, want early abort/error reporting)
--- DONE: simplify lookupRecord (only operate on ByteStrings, keep Backend simple)
--- DONE: batches
-
--- DONE: insert -> insertTables
--- DONE: ModifyTables
-
 -- TODO: resolve with internal batch ids, then go to db
 -- TODO: ResolveError
 
 -- TODO: ReadBatches returns only 'Unresolved tables, use ResolveTables to resolve
 
+-- TODO: LookupFns on table level? no danger of undefined fields...
+
+-- TODO: Absolute / Relative ids on type level
+
+-- TODO: do we need ErrorOnDuplicateIndexes? standard behaviour is just to overwrite
+
+-- TODO: can we derive multiple classes at once?
+
+-- TODO: split Backend typeclass into lookup and insert
+
 -- TODO: error -> MonadError
 -- TODO: record <-> table naming
+
+-- DONE: absolute/relative ids
+-- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
+-- DONE: consistency checks (must be done on insert, want early abort/error reporting)
+-- DONE: simplify lookupRecord (only operate on ByteStrings, keep Backend simple)
+-- DONE: batches
+-- DONE: insert -> insertTables
+-- DONE: ModifyTables
 
 --------------------------------------------------------------------------------
 
