@@ -40,7 +40,10 @@ import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..),
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
-import           Prelude hiding (id, lookup, length)
+import           Prelude hiding (lookup, length)
+
+-- TODO: Resolve ForeignRelativeId, etc
+-- TODO: nest tables
 
 -- TODO: Map -> HashMap
 
@@ -82,6 +85,9 @@ import           Prelude hiding (id, lookup, length)
 
 serialize :: S.Serialize a => a -> B.ByteString
 serialize = S.runPut . S.put
+
+unsafeParse :: S.Serialize a => B.ByteString -> a
+unsafeParse = either (error "unsafeParse") id . S.runGet S.get
 
 type family Fst a where
   Fst '(a, b) = a
@@ -227,14 +233,14 @@ unsafeLookupRecord
   => backend
   -> Snapshot backend
 
+  -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
+
   -> TableName
   -> FieldName
   -> k
   -> Maybe (v tables 'Resolved)
-unsafeLookupRecord db snapshot table field k
-  = case S.runGet S.get <$> lookupRecord db snapshot table field (serialize k) of
-      Just (Right v) -> Just (resolve db snapshot mempty v)
-      _ -> Nothing
+unsafeLookupRecord db snapshot rsvMap table field k
+  = resolve db snapshot rsvMap . unsafeParse <$> lookupRecord db snapshot table field (serialize k)
 
 -- LookupField ------------------------------------------------------------------
 
@@ -265,7 +271,7 @@ instance {-# OVERLAPPING #-}
   GLookupField (Named field (LookupFns tables table k), rs) where
     gLookupById db snapshot table
       = ( Named $ LookupFns
-            { lookup = \k -> unsafeLookupRecord db snapshot table (symbolVal (Proxy :: Proxy field)) k
+            { lookup = \k -> unsafeLookupRecord db snapshot mempty table (symbolVal (Proxy :: Proxy field)) k
             , elems =
                 [ (k', resolve db snapshot mempty v')
                 | (k, v) <- lookupElems db snapshot table (symbolVal (Proxy :: Proxy field))
@@ -362,15 +368,49 @@ instance
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
     gResolve db snapshot rsvMap (Named (ForeignId k), us)
-      = ( Named $ Lazy $ fromJust $ unsafeLookupRecord
-            db
-            snapshot
-            (symbolVal (Proxy :: Proxy table))
-            (symbolVal (Proxy :: Proxy field))
-            k
+      = ( Named $ Lazy $ case rsvRecord of
+            Just record' -> resolve db snapshot rsvMap $ unsafeParse record' -- try rsvMap first
+            Nothing -> fromJust $ unsafeLookupRecord db snapshot rsvMap table field k -- else, try backend
+
         , gResolve db snapshot rsvMap us
         )
+      where
+        table = symbolVal (Proxy :: Proxy table)
+        field = symbolVal (Proxy :: Proxy field)
+
+        rsvRecord
+          =   M.lookup table (MM.getMonoidalMap rsvMap)
+          >>= M.lookup field . MM.getMonoidalMap
+          >>= M.lookup (True, serialize k) . MM.getMonoidalMap
+      
     gResolve _ _ _ (Named (ForeignRelativeId _), _) = error "gResolve: ForeignRelativeId"
+
+instance
+  ( Serialize u
+  , Serialize (r tables 'Unresolved)
+
+  , Resolve tables r
+  , GResolve us rs
+
+  , Functor f
+
+  , KnownSymbol table
+  , KnownSymbol field
+  ) =>
+  GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
+    gResolve db snapshot rsvMap (Named k', us) =
+      ( Named $ flip fmap k' $ \(ForeignId k) ->
+          Lazy $ fromJust $ unsafeLookupRecord db snapshot rsvMap table field k
+      , gResolve db snapshot rsvMap us
+      )
+      where
+        table = symbolVal (Proxy :: Proxy table)
+        field = symbolVal (Proxy :: Proxy field)
+
+        -- rsvRecord k
+        --   =   M.lookup table (MM.getMonoidalMap rsvMap)
+        --   >>= M.lookup field . MM.getMonoidalMap
+        --   >>= M.lookup (True, serialize k) . MM.getMonoidalMap
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -397,30 +437,6 @@ instance
       = ( Named $ fmap (resolve db snapshot rsvMap) u
         , gResolve db snapshot rsvMap us
         )
-
-instance
-  ( Serialize u
-  , Serialize (r tables 'Unresolved)
-
-  , Resolve tables r
-  , GResolve us rs
-
-  , Functor f
-
-  , KnownSymbol table
-  , KnownSymbol field
-  ) =>
-  GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve db snapshot rsvMap (Named k', us) =
-      ( Named $ flip fmap k' $ \(ForeignId k) ->
-          Lazy $ fromJust $ unsafeLookupRecord
-            db
-            snapshot
-            (symbolVal (Proxy :: Proxy table))
-            (symbolVal (Proxy :: Proxy field))
-            k
-      , gResolve db snapshot rsvMap us
-      )
 
 class Resolve (tables :: TableMode -> *) u where
   resolve
@@ -451,29 +467,32 @@ class GResolveTables u t where
     :: Backend db
 
     => db
+    -> Snapshot db
     -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
     -> u
     -> t
 
 instance GResolveTables () () where
-  gResolveTables _ _ () = ()
+  gResolveTables _ _ _ () = ()
 
 instance GResolveTables u t => GResolveTables (Either u Void) (Either t Void) where
-  gResolveTables db rsvMap (Left u) = Left $ gResolveTables db rsvMap u
-  gResolveTables _ _ _ = undefined
+  gResolveTables db snapshot rsvMap (Left u) = Left $ gResolveTables db snapshot rsvMap u
+  gResolveTables _ _ _ _ = undefined
 
 instance
   ( GResolveTables us ts
-  , KnownSymbol table
-  ) => GResolveTables (Named table u, us) (Named table t, ts) where
-    gResolveTables db rsvMap (u, us) = (undefined, gResolveTables db rsvMap us)
-      where
-        tableMap = fromMaybe mempty $ M.lookup (symbolVal (Proxy :: Proxy table)) (MM.getMonoidalMap rsvMap)
+  , Resolve tables t 
+  ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
+    gResolveTables db snapshot rsvMap (Named ts, us) =
+      ( Named $ fmap (resolve db snapshot rsvMap) ts
+      , gResolveTables db snapshot rsvMap us
+      )
 
 class ResolveTables t where
   resolveTables
     :: Backend db
     => db
+    -> Snapshot db
     -> InsertOptions
     -> t ('Batch 'Unresolved)
     -> t ('Batch 'Resolved)
@@ -485,10 +504,11 @@ class ResolveTables t where
     => GSerializeTables (Eot (t ('Batch 'Unresolved)))
 
     => db
+    -> Snapshot db
     -> InsertOptions
     -> t ('Batch 'Unresolved)
     -> t ('Batch 'Resolved)
-  resolveTables db opts u = fromEot $ gResolveTables db rsvMap (toEot u)
+  resolveTables db snapshot opts u = fromEot $ gResolveTables db snapshot rsvMap (toEot u)
     where
       (_, srs) = gSerializeTables opts (toEot u) [] M.empty
 
