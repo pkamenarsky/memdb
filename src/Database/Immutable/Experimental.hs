@@ -33,7 +33,7 @@ import           Data.Semigroup (Semigroup, Sum (Sum), Last (Last))
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
-import           Data.Validation (Validation (..))
+import           Data.Validation (Validation (..), bindValidation)
 import qualified Data.Set as S
 import           Data.Word (Word64)
 
@@ -242,7 +242,7 @@ unsafeLookupRecord
   -> k
   -> Maybe (v tables 'Resolved)
 unsafeLookupRecord db snapshot rsvMap table field k
-  = resolve db snapshot rsvMap . unsafeParse <$> lookupRecord db snapshot table field (serialize k)
+  = undefined -- resolve db snapshot rsvMap . unsafeParse <$> lookupRecord db snapshot table field (serialize k)
 
 -- LookupField ------------------------------------------------------------------
 
@@ -274,12 +274,12 @@ instance {-# OVERLAPPING #-}
     gLookupById db snapshot table
       = ( Named $ LookupFns
             { lookup = \k -> unsafeLookupRecord db snapshot mempty table (symbolVal (Proxy :: Proxy field)) k
-            , elems =
-                [ (k', resolve db snapshot mempty v')
-                | (k, v) <- lookupElems db snapshot table (symbolVal (Proxy :: Proxy field))
-                , Right k' <- [ S.runGet S.get k ]
-                , Right v' <- [ S.runGet S.get v ]
-                ]
+            , elems = undefined
+                -- [ (k', resolve db snapshot mempty v')
+                -- | (k, v) <- lookupElems db snapshot table (symbolVal (Proxy :: Proxy field))
+                -- , Right k' <- [ S.runGet S.get k ]
+                -- , Right v' <- [ S.runGet S.get v ]
+                -- ]
             }
         , gLookupById db snapshot table
         )
@@ -333,11 +333,17 @@ class LookupFields (t :: TableMode -> *) where
 -- Resolve ---------------------------------------------------------------------
 
 newtype ResolveError = ResolveError [EId]
-  deriving (Monoid, Semigroup)
+
+instance Monoid ResolveError where
+  mempty = ResolveError []
+  mappend = (<>)
+
+instance Semigroup ResolveError where
+  ResolveError es <> ResolveError gs = ResolveError (es <> gs)
 
 class GResolve u r where
   gResolve
-    :: MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
+    :: (EId -> Validation ResolveError B.ByteString)
     -> u
     -> Validation ResolveError r
 
@@ -370,28 +376,17 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-    gResolve rsvMap (Named eid, us)
+    gResolve rsvMap (Named fid, us)
       = (,) <$> rsv <*> gResolve rsvMap us
       where
-        rsv = case rsvRecord of
-          Just record' -> fmap (Named . Lazy) $ resolve rsvMap $ unsafeParse record'
-          Nothing -> Failure $ ResolveError
-            [ case eid of
-                ForeignId k -> EForeignId table field k
-                ForeignRelativeId k -> EForeignRelativeId table field k
-            ]
-
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
 
-        value = case eid of
-          ForeignId k -> (True, serialize k)
-          ForeignRelativeId k -> (False, serialize k)
+        eid = case fid of
+          ForeignId k -> EForeignId table field k
+          ForeignRelativeId k -> EForeignRelativeId table field k
 
-        rsvRecord
-          =   M.lookup table (MM.getMonoidalMap rsvMap)
-          >>= M.lookup field . MM.getMonoidalMap
-          >>= M.lookup value . MM.getMonoidalMap
+        rsv = fmap unsafeParse (rsvMap eid) `bindValidation` \rsvRecord -> fmap (Named . Lazy) $ resolve rsvMap rsvRecord
 
 instance
   ( Serialize u
@@ -440,81 +435,65 @@ instance
   , GResolve us rs
   ) =>
   GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
-    gResolve db snapshot rsvMap (Named u, us)
+    gResolve rsvMap (Named u, us)
       = (,) <$> undefined -- fmap (fmap Named) (fmap (resolve db snapshot rsvMap) u)
-            <*> gResolve db snapshot rsvMap us
+            <*> gResolve rsvMap us
 
 class Resolve (tables :: TableMode -> *) u where
   resolve
-    :: Backend db
-    => db
-    -> Snapshot db
-    -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
+    :: (EId -> Validation ResolveError B.ByteString)
     -> u tables 'Unresolved
     -> Validation ResolveError (u tables 'Resolved)
   default resolve
     :: HasEot (u tables 'Unresolved)
     => HasEot (u tables 'Resolved)
     => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
-    => Backend db
-    => db
-    -> Snapshot db
-    -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
+
+    => (EId -> Validation ResolveError B.ByteString)
     -> u tables 'Unresolved
     -> Validation ResolveError (u tables 'Resolved)
-  resolve db snapshot rsvMap = fmap fromEot . gResolve db snapshot rsvMap . toEot
+  resolve rsvMap = fmap fromEot . gResolve rsvMap . toEot
 
 -- ResolveTables ---------------------------------------------------------------
 
 class GResolveTables u t where
   gResolveTables
-    :: Backend db
-
-    => db
-    -> Snapshot db
-    -> MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
+    :: (EId -> Validation ResolveError B.ByteString)
     -> u
-    -> t
+    -> Validation ResolveError t
 
 instance GResolveTables () () where
-  gResolveTables _ _ _ () = ()
+  gResolveTables _ () = Success ()
 
 instance GResolveTables u t => GResolveTables (Either u Void) (Either t Void) where
-  gResolveTables db snapshot rsvMap (Left u) = Left $ gResolveTables db snapshot rsvMap u
-  gResolveTables _ _ _ _ = undefined
+  gResolveTables rsvMap (Left u) = Left <$> gResolveTables rsvMap u
+  gResolveTables _ _ = undefined
 
 instance
   ( GResolveTables us ts
   , Resolve tables t 
   ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
-    gResolveTables db snapshot rsvMap (Named ts, us) =
-      ( undefined -- Named $ fmap (resolve db snapshot rsvMap) ts
-      , gResolveTables db snapshot rsvMap us
-      )
+    gResolveTables rsvMap (Named ts, us) =
+      (,) <$> fmap Named (traverse (resolve rsvMap) ts)
+          <*> gResolveTables rsvMap us
 
 class ResolveTables t where
   resolveTables
-    :: Backend db
-    => db
-    -> Snapshot db
-    -> InsertOptions
+    :: (EId -> Validation ResolveError B.ByteString)
     -> t ('Batch 'Unresolved)
-    -> t ('Batch 'Resolved)
+    -> Validation ResolveError (t ('Batch 'Resolved))
   default resolveTables
-    :: Backend db
-    => HasEot (t ('Batch 'Unresolved))
+    :: HasEot (t ('Batch 'Unresolved))
     => HasEot (t ('Batch 'Resolved))
     => GResolveTables (Eot (t ('Batch 'Unresolved))) (Eot (t ('Batch 'Resolved)))
     => GSerializeTables (Eot (t ('Batch 'Unresolved)))
 
-    => db
-    -> Snapshot db
-    -> InsertOptions
+    => (EId -> Validation ResolveError B.ByteString)
     -> t ('Batch 'Unresolved)
-    -> t ('Batch 'Resolved)
-  resolveTables db snapshot opts u = fromEot $ gResolveTables db snapshot rsvMap (toEot u)
+    -> Validation ResolveError (t ('Batch 'Resolved))
+  resolveTables extRsvMap u = fromEot <$> gResolveTables rsv (toEot u)
     where
-      (_, srs) = gSerializeTables opts (toEot u) [] M.empty
+      (_, srs) = gSerializeTables undefined (toEot u) [] M.empty
 
       infixr 5 =:
       k =: v = MM.singleton k v
@@ -532,6 +511,19 @@ class ResolveTables t where
         | (table, records) <- srs
         , (eids, record) <- records
         ]
+
+      rsvRecord table field value
+        =   M.lookup table (MM.getMonoidalMap rsvMap)
+        >>= M.lookup field . MM.getMonoidalMap
+        >>= M.lookup value . MM.getMonoidalMap
+
+      rsv eid@(EForeignId table field value) = case rsvRecord table field (True, serialize value) of
+        Nothing -> extRsvMap eid
+        Just record -> Success record
+      rsv eid@(EForeignRelativeId table field value) = case rsvRecord table field (False, serialize value) of
+        Nothing -> extRsvMap eid
+        Just record -> Success record
+      rsv eid = error $ "resolveTables: " <> show eid
 
 -- GatherIds -------------------------------------------------------------------
 
@@ -801,13 +793,13 @@ instance
   ) =>
   GReadBatches (Named table [r tables 'Resolved], ts) where
     gReadBatches db snapshot batches =
-      ( Named
-          [ resolve db snapshot (error "Remove GReadBatches 'Resolved") record 
-          | batch <- batches
-          , Just records <- [ M.lookup (symbolVal (Proxy :: Proxy table)) batch ]
-          , recordBS <- records
-          , Right record <- [ S.runGet S.get recordBS ]
-          ]
+      ( Named undefined
+          -- [ resolve db snapshot (error "Remove GReadBatches 'Resolved") record 
+          -- | batch <- batches
+          -- , Just records <- [ M.lookup (symbolVal (Proxy :: Proxy table)) batch ]
+          -- , recordBS <- records
+          -- , Right record <- [ S.runGet S.get recordBS ]
+          -- ]
       , gReadBatches db snapshot batches
       )
 
