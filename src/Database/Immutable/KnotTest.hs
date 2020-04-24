@@ -25,7 +25,6 @@ data Person tables m = Person
 
 deriving instance Show (Person CompanyTables 'Unresolved)
 deriving instance Show (Person CompanyTables 'Resolved)
-deriving instance Serialize (Person CompanyTables 'Unresolved)
 
 data MaybeList a = MaybeList [Maybe a]
   deriving (Functor, Foldable, G.Generic, Serialize, Show)
@@ -38,7 +37,6 @@ data Employer tables m = Employer
 
 deriving instance Show (Employer CompanyTables 'Unresolved)
 deriving instance Show (Employer CompanyTables 'Resolved)
-deriving instance Serialize (Employer CompanyTables 'Unresolved)
 
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person

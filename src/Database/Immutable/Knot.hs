@@ -32,13 +32,9 @@ module Database.Immutable.Knot
 
 import           Control.DeepSeq (NFData)
 
-import qualified Data.ByteString as B
 import           Data.Foldable (Foldable, toList)
 import qualified Data.Map as M
 import           Data.Maybe (catMaybes)
-import           Data.Semigroup (Semigroup)
-import qualified Data.Serialize as S
-import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
 
 import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
@@ -48,9 +44,6 @@ import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fro
 import           Unsafe.Coerce (unsafeCoerce)
 
 --------------------------------------------------------------------------------
-
-serialize :: S.Serialize a => a -> B.ByteString
-serialize = S.runPut . S.put
 
 type family Fst a where
   Fst '(a, b) = a
@@ -62,11 +55,12 @@ type family Snd a where
 
 type TableName = String
 type FieldName = String
+type FieldValue = String
 
 data Mode = Resolved | Unresolved | Done
 
 newtype RecordId t = Id t
-  deriving (Show, Serialize)
+  deriving (Show, Eq, Ord, Num, NFData)
 
 type family Id (tables :: Mode -> *) (recordMode :: Mode) t where
   Id tables 'Done t = RecordId t
@@ -81,7 +75,7 @@ instance Show (Lazy tables a) where
   show _ = "Lazy"
 
 newtype ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
-  deriving (Show, Serialize, NFData)
+  deriving (Show, Eq, Ord, Num, NFData)
 
 type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = ()
@@ -96,8 +90,8 @@ type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbo
 -- GatherIds -------------------------------------------------------------------
 
 data EId
-  = forall t. (Show t, Serialize t) => EId TableName FieldName t Dynamic
-  | forall t. (Show t, Serialize t) => EForeignId TableName FieldName t
+  = forall t. Show t => EId TableName FieldName t Dynamic
+  | forall t. Show t => EForeignId TableName FieldName t
 
 deriving instance Show EId
 
@@ -131,11 +125,8 @@ instance GGatherIds us => GGatherIds (Named field u, us) where
   gGatherIds table record (_, us) = gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
-  ( Serialize t
-  , Show t
-
+  ( Show t
   , GGatherIds us
-
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
@@ -143,8 +134,7 @@ instance {-# OVERLAPPING #-}
       = EId table (symbolVal (Proxy :: Proxy field)) k record:gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
-  ( Serialize t
-  , Show t
+  ( Show t
 
   , GGatherIds us
 
@@ -156,8 +146,7 @@ instance {-# OVERLAPPING #-}
       = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k:gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
-  ( Serialize t
-  , Show t
+  ( Show t
 
   , GGatherIds us
 
@@ -203,12 +192,14 @@ instance ( GGatherTableIds ts
 
 -- Resolve ---------------------------------------------------------------------
 
-newtype ResolveError = ResolveError [(TableName, FieldName, B.ByteString)]
-  deriving (Semigroup, Monoid, Show)
+data ResolveError
+  = MissingIds [(TableName, FieldName, FieldValue)]
+  | RepeatingIds [(TableName, FieldName, FieldValue)]
+  deriving Show
 
 class GResolve u r where
   gResolve
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    :: (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u
     -> r
 
@@ -229,8 +220,7 @@ instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs)
   gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
 
 instance
-  ( Serialize u
-  , Show u
+  ( Show u
 
   , KnitRecord tables r
   , GResolve us rs
@@ -240,7 +230,7 @@ instance
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
     gResolve rsvMap (Named (ForeignId k), us)
-      = ( Named $ Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
+      = ( Named $ Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (show k))
         , gResolve rsvMap us
         )
       where
@@ -248,8 +238,7 @@ instance
         field = symbolVal (Proxy :: Proxy field)
 
 instance
-  ( Serialize u
-  , Show u
+  ( Show u
 
   , KnitRecord tables r
   , GResolve us rs
@@ -261,7 +250,7 @@ instance
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
     gResolve rsvMap (Named f, us)
-      = ( Named $ flip fmap f $ \(ForeignId k) -> Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
+      = ( Named $ flip fmap f $ \(ForeignId k) -> Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (show k))
         , gResolve rsvMap us
         )
       where
@@ -278,7 +267,7 @@ instance
 -- ResolveTables ---------------------------------------------------------------
 
 class GResolveTables u t where
-  gResolveTables :: (TableName -> FieldName -> B.ByteString -> Dynamic) -> u -> t
+  gResolveTables :: (TableName -> FieldName -> FieldValue -> Dynamic) -> u -> t
 
 instance GResolveTables () () where
   gResolveTables _ () = ()
@@ -298,7 +287,7 @@ instance
 
 class KnitRecord (tables :: Mode -> *) u where
   resolve
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    :: (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u tables 'Unresolved
     -> u tables 'Resolved
   default resolve
@@ -306,7 +295,7 @@ class KnitRecord (tables :: Mode -> *) u where
     => HasEot (u tables 'Resolved)
     => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
 
-    => (TableName -> FieldName -> B.ByteString -> Dynamic)
+    => (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u tables 'Unresolved
     -> u tables 'Resolved
   resolve rsvMap = fromEot . gResolve rsvMap . toEot
@@ -326,7 +315,7 @@ class KnitRecord (tables :: Mode -> *) u where
 
 class KnitTables t where
   resolveTables
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    :: (TableName -> FieldName -> FieldValue -> Dynamic)
     -> t 'Unresolved
     -> Either ResolveError (t 'Resolved)
   default resolveTables
@@ -335,23 +324,31 @@ class KnitTables t where
     => GResolveTables (Eot (t 'Unresolved)) (Eot (t 'Resolved))
     => KnitTables t
 
-    => (TableName -> FieldName -> B.ByteString -> Dynamic)
+    => (TableName -> FieldName -> FieldValue -> Dynamic)
     -> t 'Unresolved
     -> Either ResolveError (t 'Resolved)
   resolveTables extRsvMap u
+    | not (null repeatingIds) = Left $ RepeatingIds repeatingIds
     | [] <- missingIds = Right $ fromEot $ gResolveTables rsv (toEot u)
-    | otherwise = Left $ ResolveError missingIds
+    | otherwise = Left $ MissingIds missingIds
     where
       eids = gatherTableIds u
 
       eidMap = M.fromListWith (<>)
-        [ ((table, field, serialize k), [record])
+        [ ((table, field, show k), [record])
         | EId table field k record <- eids
         ]
 
+      repeatingIds = mconcat
+        [ if length records > 1
+            then [(table, field, k)]
+            else []
+        | ((table, field, k), records) <- M.toList eidMap
+        ]
+
       missingIds = catMaybes
-        [ case M.lookup (table, field, serialize k) eidMap of
-            Nothing -> Just (table, field, serialize k)
+        [ case M.lookup (table, field, show k) eidMap of
+            Nothing -> Just (table, field, show k)
             Just _ -> Nothing
         | EForeignId table field k <- eids
         ]
@@ -361,7 +358,7 @@ class KnitTables t where
       rsv table field value = case rsvRecord table field value of
         Nothing -> extRsvMap table field value
         Just [record] -> record
-        _ -> error "resolveTables: Repeating ids"
+        _ -> error "resolveTables: repeating ids (this is a bug, the consistency check should have caught this)"
 
   gatherTableIds :: t 'Unresolved -> [EId]
   default gatherTableIds
@@ -403,4 +400,4 @@ type family Table (tables :: Mode -> *) (c :: Mode) table where
 
 knit :: KnitTables t => t 'Unresolved -> Either ResolveError (t 'Resolved)
 knit = resolveTables
-  (error "Inconsistent record (this is a bug, the consistency check should have caught this")
+  (error "knit: inconsistent record (this is a bug, the consistency check should have caught this")

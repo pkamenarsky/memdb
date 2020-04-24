@@ -35,7 +35,7 @@ model = Model
   [ Person (Id "Alice") [ ForeignId "Bob", ForeignId "cat" ]
   , Person (Id "Bob") [ ForeignId "Alice" ]
 
-  -- you may disagree, but the cat thinks of itself as Person
+  -- You may disagree, but the cat thinks of itself as Person
   , Person (Id "cat") [ ForeignId "cat" ]
   ]
 
