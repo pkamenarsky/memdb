@@ -150,7 +150,7 @@ instance Semigroup ResolveError where
 
 class GResolve u r where
   gResolve
-    :: (EId -> Validation ResolveError B.ByteString)
+    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
     -> u
     -> Validation ResolveError r
 
@@ -188,7 +188,7 @@ instance
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
 
-        rsv = fmap unsafeParse (rsvMap (EForeignId table field k)) `bindValidation` \rsvRecord -> fmap (Named . Lazy) $ resolve rsvMap rsvRecord
+        rsv = fmap fromDynamic (rsvMap table field (serialize k)) `bindValidation` \rsvRecord -> fmap (Named . Lazy) $ resolve rsvMap rsvRecord
 
 instance
   ( Serialize u
@@ -211,11 +211,11 @@ instance
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
 
-        eid :: Serialize t => Show t => ForeignRecordId table field t -> EId
-        eid (ForeignId k) = EForeignId table field k
+        lookup :: Serialize t => Show t => ForeignRecordId table field t -> Validation ResolveError Dynamic
+        lookup (ForeignId k) = rsvMap table field (serialize k)
 
         rsv :: Resolve tables r => f (ForeignRecordId table field u) -> Validation ResolveError (Named x (f (Lazy tables r)))
-        rsv = fmap (Named . fmap Lazy) . sequenceA . fmap ((`bindValidation` resolve rsvMap) . fmap unsafeParse . rsvMap . eid)
+        rsv = fmap (Named . fmap Lazy) . sequenceA . fmap ((`bindValidation` resolve rsvMap) . fmap fromDynamic . lookup)
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -230,7 +230,7 @@ instance
 
 class Resolve (tables :: TableMode -> *) u where
   resolve
-    :: (EId -> Validation ResolveError B.ByteString)
+    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
     -> u tables 'Unresolved
     -> Validation ResolveError (u tables 'Resolved)
   default resolve
@@ -238,7 +238,7 @@ class Resolve (tables :: TableMode -> *) u where
     => HasEot (u tables 'Resolved)
     => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
 
-    => (EId -> Validation ResolveError B.ByteString)
+    => (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
     -> u tables 'Unresolved
     -> Validation ResolveError (u tables 'Resolved)
   resolve rsvMap = fmap fromEot . gResolve rsvMap . toEot
@@ -247,7 +247,7 @@ class Resolve (tables :: TableMode -> *) u where
 
 class GResolveTables u t where
   gResolveTables
-    :: (EId -> Validation ResolveError B.ByteString)
+    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
     -> u
     -> Validation ResolveError t
 
@@ -268,46 +268,28 @@ instance
 
 class ResolveTables t where
   resolveTables
-    :: (EId -> Validation ResolveError B.ByteString)
+    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
     -> t ('Batch 'Unresolved)
     -> Validation ResolveError (t ('Batch 'Resolved))
   default resolveTables
     :: HasEot (t ('Batch 'Unresolved))
     => HasEot (t ('Batch 'Resolved))
     => GResolveTables (Eot (t ('Batch 'Unresolved))) (Eot (t ('Batch 'Resolved)))
+    => GatherTableIds t
 
-    => (EId -> Validation ResolveError B.ByteString)
+    => (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
     -> t ('Batch 'Unresolved)
     -> Validation ResolveError (t ('Batch 'Resolved))
   resolveTables extRsvMap u = fromEot <$> gResolveTables rsv (toEot u)
     where
-      (_, srs) = undefined -- gSerializeTables OverwriteDuplicateIndexes (toEot u) [] M.empty
+      eidMap = gatherTableIds u
 
-      infixr 5 =:
-      k =: v = MM.singleton k v
+      rsvRecord table field value = M.lookup (table, field, value) eidMap
 
-      rsvMap :: MM.MonoidalMap TableName (MM.MonoidalMap FieldName (MM.MonoidalMap (Bool, B.ByteString) B.ByteString))
-      rsvMap = mconcat
-        [ mconcat
-            [ case eid of
-                EId field t -> table =: field =: (True, serialize t) =: record
-                _ -> mempty
-
-            | eid <- eids
-            ]
-        | (table, records) <- srs
-        , (eids, record) <- records
-        ]
-
-      rsvRecord table field value
-        =   M.lookup table (MM.getMonoidalMap rsvMap)
-        >>= M.lookup field . MM.getMonoidalMap
-        >>= M.lookup value . MM.getMonoidalMap
-
-      rsv eid@(EForeignId table field value) = case rsvRecord table field (True, serialize value) of
-        Nothing -> extRsvMap eid
-        Just record -> Success record
-      rsv eid = error $ "resolveTables: " <> show eid
+      rsv table field value = case rsvRecord table field (serialize value) of
+        Nothing -> extRsvMap table field value
+        Just [record] -> Success record
+        _ -> error "resolveTables: Repeating ids"
 
 -- GatherIds -------------------------------------------------------------------
 
