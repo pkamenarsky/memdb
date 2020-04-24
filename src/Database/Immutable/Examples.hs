@@ -1,3 +1,5 @@
+{-# OPTIONS -Wno-unticked-promoted-constructors #-}
+
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -18,18 +20,17 @@ data Person tables m = Person
   , loves :: [ForeignId tables m "persons" "name"]
   } deriving (Generic, KnitRecord Model)
 
-deriving instance Show (Person Model 'Unresolved)
-deriving instance Show (Person Model 'Resolved)
+deriving instance Show (Person Model Resolved)
 
 data Model m = Model
   { persons :: Table Model m Person
   } deriving (Generic, KnitTables)
 
-deriving instance Show (Model ('Batch 'Resolved))
+deriving instance Show (Model Resolved)
 
 --------------------------------------------------------------------------------
 
-model :: Model ('Batch 'Unresolved)
+model :: Model Unresolved
 model = Model
   [ Person (Id "Alice") [ ForeignId "Bob", ForeignId "cat" ]
   , Person (Id "Bob") [ ForeignId "Alice" ]
@@ -38,7 +39,7 @@ model = Model
   , Person (Id "cat") [ ForeignId "cat" ]
   ]
 
-knitModel :: Model ('Batch 'Resolved)
+knitModel :: Model Resolved
 knitModel = case knit model of
   Right resolved -> resolved
   Left e -> error (show e)

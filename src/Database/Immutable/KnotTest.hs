@@ -45,7 +45,7 @@ data CompanyTables m = CompanyTables
   , employers :: Table CompanyTables m Employer
   } deriving (G.Generic, KnitTables)
 
-deriving instance Show (CompanyTables ('Batch 'Resolved))
+deriving instance Show (CompanyTables 'Resolved)
 
 --------------------------------------------------------------------------------
 
@@ -73,7 +73,7 @@ employerU = Employer
 personR :: Person CompanyTables 'Resolved
 personR = undefined
 
-companyU :: CompanyTables ('Batch 'Unresolved)
+companyU :: CompanyTables 'Unresolved
 companyU = CompanyTables
   { persons = [personU]
   , employers = [employerU]

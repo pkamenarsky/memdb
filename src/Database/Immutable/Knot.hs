@@ -25,8 +25,7 @@ module Database.Immutable.Knot
 
   , Table
 
-  , TableMode (..)
-  , RecordMode (..)
+  , Mode (..)
 
   , knit
   )where
@@ -64,12 +63,12 @@ type family Snd a where
 type TableName = String
 type FieldName = String
 
-data RecordMode = Resolved | Unresolved | Done
+data Mode = Resolved | Unresolved | Done
 
 newtype RecordId t = Id t
   deriving (Show, Serialize)
 
-type family Id (tables :: TableMode -> *) (recordMode :: RecordMode) t where
+type family Id (tables :: Mode -> *) (recordMode :: Mode) t where
   Id tables 'Done t = RecordId t
   Id tables 'Resolved t = t
   Id tables 'Unresolved t = RecordId t
@@ -84,15 +83,15 @@ instance Show (Lazy tables a) where
 newtype ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
   deriving (Show, Serialize, NFData)
 
-type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (table :: Symbol) (field :: Symbol) where
+type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = ()
   ForeignId tables 'Unresolved table field = ForeignRecordId
     table
     field
-    (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Cannonical)))))
+    (LookupFieldType field (Snd (LookupTableType table (Eot (tables 'Unresolved)))))
   ForeignId tables 'Resolved table field = Lazy
     tables
-    (Fst (LookupTableType table (Eot (tables 'Cannonical))))
+    (Fst (LookupTableType table (Eot (tables 'Resolved))))
 
 -- GatherIds -------------------------------------------------------------------
 
@@ -297,7 +296,7 @@ instance
 
 -- KnitRecord ------------------------------------------------------------------
 
-class KnitRecord (tables :: TableMode -> *) u where
+class KnitRecord (tables :: Mode -> *) u where
   resolve
     :: (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> u tables 'Unresolved
@@ -328,17 +327,17 @@ class KnitRecord (tables :: TableMode -> *) u where
 class KnitTables t where
   resolveTables
     :: (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> t ('Batch 'Unresolved)
-    -> Either ResolveError (t ('Batch 'Resolved))
+    -> t 'Unresolved
+    -> Either ResolveError (t 'Resolved)
   default resolveTables
-    :: HasEot (t ('Batch 'Unresolved))
-    => HasEot (t ('Batch 'Resolved))
-    => GResolveTables (Eot (t ('Batch 'Unresolved))) (Eot (t ('Batch 'Resolved)))
+    :: HasEot (t 'Unresolved)
+    => HasEot (t 'Resolved)
+    => GResolveTables (Eot (t 'Unresolved)) (Eot (t 'Resolved))
     => KnitTables t
 
     => (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> t ('Batch 'Unresolved)
-    -> Either ResolveError (t ('Batch 'Resolved))
+    -> t 'Unresolved
+    -> Either ResolveError (t 'Resolved)
   resolveTables extRsvMap u
     | [] <- missingIds = Right $ fromEot $ gResolveTables rsv (toEot u)
     | otherwise = Left $ ResolveError missingIds
@@ -364,11 +363,11 @@ class KnitTables t where
         Just [record] -> record
         _ -> error "resolveTables: Repeating ids"
 
-  gatherTableIds :: t ('Batch 'Unresolved) -> [EId]
+  gatherTableIds :: t 'Unresolved -> [EId]
   default gatherTableIds
-    :: HasEot (t ('Batch 'Unresolved))
-    => GGatherTableIds (Eot (t ('Batch 'Unresolved)))
-    => t ('Batch 'Unresolved)
+    :: HasEot (t 'Unresolved)
+    => GGatherTableIds (Eot (t 'Unresolved))
+    => t 'Unresolved
     -> [EId]
   gatherTableIds = gGatherTableIds . toEot
 
@@ -380,11 +379,11 @@ type family ExpandRecord (parent :: Symbol) (record :: *) where
   ExpandRecord parent (Eot.Named name (RecordId a), fields) = (Eot.Named name a, ExpandRecord parent fields)
   ExpandRecord parent (a, fields) = ExpandRecord parent fields
 
-type family LookupTableType (table :: Symbol) (eot :: *) :: (((TableMode -> *) -> RecordMode -> *), *) where
+type family LookupTableType (table :: Symbol) (eot :: *) :: (((Mode -> *) -> Mode -> *), *) where
   LookupTableType name (Either records Eot.Void) = LookupTableType name records
-  LookupTableType name (Eot.Named name (record tables recordMode), records)
+  LookupTableType name (Eot.Named name [record tables recordMode], records)
     = '(record, ExpandRecord name (Eot (record tables 'Done)))
-  LookupTableType name (Eot.Named otherName (record tables recordMode), records)
+  LookupTableType name (Eot.Named otherName [record tables recordMode], records)
     = LookupTableType name records
 
   LookupTableType name eot = TypeError ('Text "Can't lookup table type")
@@ -397,16 +396,11 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = forall r. Batch r | Cannonical | Modify
-
-type family Table (tables :: TableMode -> *) (c :: TableMode) table where
-  Table tables 'Cannonical table = table tables 'Done
-
-  Table tables ('Batch r) table = [table tables r]
-  Table tables 'Modify table = (table tables 'Unresolved -> Maybe (table tables 'Unresolved))
+type family Table (tables :: Mode -> *) (c :: Mode) table where
+  Table tables r table = [table tables r]
 
 --------------------------------------------------------------------------------
 
-knit :: KnitTables t => t ('Batch 'Unresolved) -> Either ResolveError (t ('Batch 'Resolved))
+knit :: KnitTables t => t 'Unresolved -> Either ResolveError (t 'Resolved)
 knit = resolveTables
   (error "Inconsistent record (this is a bug, the consistency check should have caught this")
