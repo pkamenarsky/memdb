@@ -44,10 +44,21 @@ knitModel = case knit model of
   Right resolved -> resolved
   Left e -> error (show e)
 
-whoLovesX :: String -> [String]
-whoLovesX x =
+manuallyKnitModel :: Model Resolved
+manuallyKnitModel = Model
+  [ alice
+  , bob
+  , cat
+  ]
+  where
+    alice = Person "Alice" [ Lazy bob, Lazy cat ]
+    bob = Person "Bob" [ Lazy alice ]
+    cat = Person "cat" [ Lazy cat ]
+
+whoLovesX :: Model Resolved -> String -> [String]
+whoLovesX m x =
   [ lovingName
-  | Person lovingName lovedPersons <- persons knitModel
+  | Person lovingName lovedPersons <- persons m
   , lovedPerson <- lovedPersons
   , name (get lovedPerson) == x
   ]
