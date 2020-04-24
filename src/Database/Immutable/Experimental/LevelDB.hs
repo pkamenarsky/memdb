@@ -7,7 +7,7 @@ module Database.Immutable.Experimental.LevelDB
   , withDB
   , Backend (..)
 
-  , testLDB
+--  , testLDB
   ) where
 
 import           Control.DeepSeq (force)
@@ -363,29 +363,29 @@ instance Backend DB where
       
 --------------------------------------------------------------------------------
 
-testLDB = do
-  withDB opts "ldb" $ \db -> do
-    insert db OverwriteDuplicateIndexes companyI
-
-    p <- withSnapshot db (lookupTest db)
-
-    print p
-    putStrLn "DONE"
-  where
-    opts = LDB.defaultOptions
-      { LDB.createIfMissing = True
-      }
-
-    lookupTest db snapshot = do
-      -- batches' <- readBatchesIO db snapshot
-      -- printStream batches'
-      print batches
-      -- pure $ map (fmap (address . get) . employer . snd) ps --(name <$> person, fmap (fmap name) f')
-      pure $ fmap (name . snd) ps
-      where
-        ps = elems (pid $ persons lookups)
-        es = elems (owner $ employers lookups)
-        person = lookup (pid $ persons lookups) 3
-        f' = (fmap get . friend) <$> person
-        lookups = lookupFields db snapshot
-        batches = readBatches' db snapshot :: CompanyTables ('Batch 'Resolved)
+-- testLDB = do
+--   withDB opts "ldb" $ \db -> do
+--     insert db OverwriteDuplicateIndexes companyI
+-- 
+--     p <- withSnapshot db (lookupTest db)
+-- 
+--     print p
+--     putStrLn "DONE"
+--   where
+--     opts = LDB.defaultOptions
+--       { LDB.createIfMissing = True
+--       }
+-- 
+--     lookupTest db snapshot = do
+--       -- batches' <- readBatchesIO db snapshot
+--       -- printStream batches'
+--       print batches
+--       -- pure $ map (fmap (address . get) . employer . snd) ps --(name <$> person, fmap (fmap name) f')
+--       pure $ fmap (name . snd) ps
+--       where
+--         ps = elems (pid $ persons lookups)
+--         es = elems (owner $ employers lookups)
+--         person = lookup (pid $ persons lookups) 3
+--         f' = (fmap get . friend) <$> person
+--         lookups = lookupFields db snapshot
+--         (_, _) = readBatches' db snapshot :: CompanyTables ('Batch 'Resolved)

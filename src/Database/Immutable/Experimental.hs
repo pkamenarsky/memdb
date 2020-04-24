@@ -2,6 +2,7 @@
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExistentialQuantification #-}
@@ -33,6 +34,7 @@ import           Data.Semigroup (Semigroup, Sum (Sum), Last (Last))
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
+import           Data.Traversable (sequenceA)
 import           Data.Validation (Validation (..), bindValidation)
 import qualified Data.Set as S
 import           Data.Word (Word64)
@@ -43,6 +45,9 @@ import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
 import           Prelude hiding (lookup, length)
+import           Debug.Trace
+
+-- TODO: test: resolve with same ids always resolves to last record
 
 -- TODO: Resolve ForeignRelativeId, etc
 -- TODO: nest tables
@@ -332,7 +337,11 @@ class LookupFields (t :: TableMode -> *) where
 
 -- Resolve ---------------------------------------------------------------------
 
+-- TODO: support: NO relative ids
+-- TODO: only resolve
+
 newtype ResolveError = ResolveError [EId]
+  deriving Show
 
 instance Monoid ResolveError where
   mempty = ResolveError []
@@ -391,29 +400,31 @@ instance
 instance
   ( Serialize u
   , Serialize (r tables 'Unresolved)
+  , Show u
 
   , Resolve tables r
   , GResolve us rs
 
   , Functor f
+  , Traversable f
 
   , KnownSymbol table
   , KnownSymbol field
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve rsvMap (Named k', us) = undefined
-      -- ( Named $ flip fmap k' $ \(ForeignId k) ->
-      --     Lazy $ fromJust $ unsafeLookupRecord db snapshot rsvMap table field k
-      -- , gResolve db snapshot rsvMap us
-      -- )
+    gResolve rsvMap (Named fid, us)
+      = (,) <$> rsv fid <*> gResolve rsvMap us
       where
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
 
-        -- rsvRecord k
-        --   =   M.lookup table (MM.getMonoidalMap rsvMap)
-        --   >>= M.lookup field . MM.getMonoidalMap
-        --   >>= M.lookup (True, serialize k) . MM.getMonoidalMap
+        eid :: Serialize t => Show t => ForeignRecordId table field t -> EId
+        eid fid' = case fid' of
+          ForeignId k -> EForeignId table field k
+          ForeignRelativeId k -> EForeignRelativeId table field k
+
+        rsv :: Resolve tables r => f (ForeignRecordId table field u) -> Validation ResolveError (Named x (f (Lazy tables r)))
+        rsv = fmap (Named . fmap Lazy) . sequenceA . fmap ((`bindValidation` resolve rsvMap) . fmap unsafeParse . rsvMap . eid)
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -426,18 +437,20 @@ instance
       = (,) <$> fmap Named (resolve rsvMap u)
             <*> gResolve rsvMap us
 
-instance
-  ( Serialize (r tables 'Unresolved)
-
-  , Functor f
-
-  , Resolve tables r
-  , GResolve us rs
-  ) =>
-  GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
-    gResolve rsvMap (Named u, us)
-      = (,) <$> undefined -- fmap (fmap Named) (fmap (resolve db snapshot rsvMap) u)
-            <*> gResolve rsvMap us
+-- instance
+--   ( Serialize (r tables 'Unresolved)
+-- 
+--   , Functor f
+-- 
+--   , Resolve tables r
+--   , GResolve us rs
+--   ) =>
+--   GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
+--     gResolve rsvMap (Named fid, us)
+--       = (,) <$> rsv fid
+--             <*> gResolve rsvMap us
+--       where
+--         rsv = undefined
 
 class Resolve (tables :: TableMode -> *) u where
   resolve
@@ -493,7 +506,7 @@ class ResolveTables t where
     -> Validation ResolveError (t ('Batch 'Resolved))
   resolveTables extRsvMap u = fromEot <$> gResolveTables rsv (toEot u)
     where
-      (_, srs) = gSerializeTables undefined (toEot u) [] M.empty
+      (_, srs) = gSerializeTables OverwriteDuplicateIndexes (toEot u) [] M.empty
 
       infixr 5 =:
       k =: v = MM.singleton k v
@@ -503,7 +516,8 @@ class ResolveTables t where
         [ mconcat
             [ case eid of
                 (EId field t) -> table =: field =: (True, serialize t) =: record
-                (EAbsolutizedId field t) -> table =: field =: (False, serialize t) =: record
+                (ERelativeId field t) -> table =: field =: (True, serialize t) =: record
+                (EAbsolutizedId field t) -> table =: field =: (True, serialize t) =: record
                 _ -> mempty
 
             | eid <- eids
@@ -894,7 +908,7 @@ deriving instance Show (Person CompanyTables 'Resolved)
 deriving instance Serialize (Person CompanyTables 'Unresolved)
 
 data MaybeList a = MaybeList [Maybe a]
-  deriving (Functor, Foldable, G.Generic, Serialize, Show)
+  deriving (Functor, Foldable, Traversable, G.Generic, Serialize, Show)
 
 data Employer tables m = Employer
   { address :: String
@@ -909,7 +923,7 @@ deriving instance Serialize (Employer CompanyTables 'Unresolved)
 data CompanyTables m = CompanyTables
   { persons :: Table CompanyTables m Person
   , employers :: Table CompanyTables m Employer
-  } deriving (G.Generic, LookupFields, InsertTables, ReadBatches)
+  } deriving (G.Generic, LookupFields, InsertTables, ReadBatches, ResolveTables)
 
 deriving instance Show (CompanyTables ('Batch 'Resolved))
 
@@ -953,6 +967,8 @@ companyI = CompanyTables
   { persons = [personU]
   , employers = [employerU]
   }
+
+companyR = resolveTables (const $ Failure $ ResolveError []) companyI
 
 -- test = do
 --   db <- newIORef (DB M.empty)
