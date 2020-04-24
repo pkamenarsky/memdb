@@ -26,7 +26,7 @@ import qualified Data.ByteString as B
 import           Data.Foldable (Foldable, toList)
 import qualified Data.Map as M
 import qualified Data.Map.Monoidal as MM
-import           Data.Maybe (fromJust, fromMaybe)
+import           Data.Maybe (catMaybes, fromJust, fromMaybe)
 import           Data.Semigroup (Semigroup, Sum (Sum), Last (Last))
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
@@ -137,7 +137,7 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 
 -- Resolve ---------------------------------------------------------------------
 
-newtype ResolveError = ResolveError [EId]
+newtype ResolveError = ResolveError [(TableName, FieldName, B.ByteString)]
   deriving Show
 
 instance Monoid ResolveError where
@@ -271,9 +271,23 @@ class ResolveTables t where
     => (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> t ('Batch 'Unresolved)
     -> Either ResolveError (t ('Batch 'Resolved))
-  resolveTables extRsvMap u = Right $ fromEot $ gResolveTables rsv (toEot u)
+  resolveTables extRsvMap u
+    | [] <- missingIds = Right $ fromEot $ gResolveTables rsv (toEot u)
+    | otherwise = Left $ ResolveError missingIds
     where
-      eidMap = gatherTableIds u
+      eids = gatherTableIds u
+
+      eidMap = M.fromListWith (<>)
+        [ ((table, field, serialize k), [record])
+        | EId table field k record <- eids
+        ]
+
+      missingIds = catMaybes
+        [ case M.lookup (table, field, serialize k) eidMap of
+            Nothing -> Just (table, field, serialize k)
+            Just _ -> Nothing
+        | EForeignId table field k <- eids
+        ]
 
       rsvRecord table field value = M.lookup (table, field, value) eidMap
 
@@ -287,26 +301,39 @@ class ResolveTables t where
 -- GatherIds -------------------------------------------------------------------
 
 data EId
-  = forall t. (Show t, Serialize t) => EId TableName FieldName t
+  = forall t. (Show t, Serialize t) => EId TableName FieldName t Dynamic
   | forall t. (Show t, Serialize t) => EForeignId TableName FieldName t
 
 deriving instance Show EId
 
+newtype Dynamic = Dynamic ()
+
+instance Show Dynamic where
+  show _ = "Dynamic"
+
+toDynamic :: a -> Dynamic
+toDynamic = unsafeCoerce
+
+fromDynamic :: Dynamic -> a
+fromDynamic = unsafeCoerce
+
+--------------------------------------------------------------------------------
+
 class GGatherIds u where
-  gGatherIds :: TableName -> u -> [EId]
+  gGatherIds :: TableName -> Dynamic -> u -> [EId]
 
 instance GGatherIds () where
-  gGatherIds _ () = []
+  gGatherIds _ _ () = []
 
 instance GGatherIds Void where
-  gGatherIds _ _ = undefined
+  gGatherIds _ _ _ = undefined
 
 instance (GGatherIds u, GGatherIds v) => GGatherIds (Either u v) where
-  gGatherIds table (Left u) = gGatherIds table u
-  gGatherIds table (Right v) = gGatherIds table v
+  gGatherIds table record (Left u) = gGatherIds table record u
+  gGatherIds table record (Right v) = gGatherIds table record v
 
 instance GGatherIds us => GGatherIds (Named field u, us) where
-  gGatherIds table (_, us) = gGatherIds table us
+  gGatherIds table record (_, us) = gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -317,7 +344,8 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
-    gGatherIds table (Named (Id k), us) = EId table (symbolVal (Proxy :: Proxy field)) k:gGatherIds table us
+    gGatherIds table record (Named (Id k), us)
+      = EId table (symbolVal (Proxy :: Proxy field)) k record:gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -329,7 +357,8 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
-    gGatherIds table (Named (ForeignId k), us) = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k:gGatherIds table us
+    gGatherIds table record (Named (ForeignId k), us)
+      = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k:gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -344,7 +373,7 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
-    gGatherIds table (Named f, us) = eids <> gGatherIds table us
+    gGatherIds table record (Named f, us) = eids <> gGatherIds table record us
       where
         eids =
           [ EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
@@ -352,34 +381,24 @@ instance {-# OVERLAPPING #-}
           ]
 
 class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: TableName -> u tables 'Unresolved -> [EId]
+  gatherIds :: TableName -> Dynamic -> u tables 'Unresolved -> [EId]
   default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
 
     => TableName
+    -> Dynamic
     -> u tables 'Unresolved
     -> [EId]
-  gatherIds table = gGatherIds table . toEot
+  gatherIds table record = gGatherIds table record . toEot
 
 -- GatherTableIds --------------------------------------------------------------
 
-newtype Dynamic = Dynamic ()
-
-instance Show Dynamic where
-  show _ = "Dynamic"
-
-toDynamic :: a -> Dynamic
-toDynamic = unsafeCoerce
-
-fromDynamic :: Dynamic -> a
-fromDynamic = unsafeCoerce
-
 class GGatherTableIds t where
-  gGatherTableIds :: t -> M.Map (TableName, FieldName, B.ByteString) [Dynamic]
+  gGatherTableIds :: t -> [EId]
 
 instance GGatherTableIds () where
-  gGatherTableIds () = M.empty
+  gGatherTableIds () = []
 
 instance GGatherTableIds Void where
   gGatherTableIds _ = undefined
@@ -392,27 +411,20 @@ instance ( GGatherTableIds ts
          , GatherIds tables r
          , KnownSymbol table
          ) => GGatherTableIds (Named table [r tables 'Unresolved], ts) where
-  gGatherTableIds (Named records, ts) = M.unionWith (<>) eidMap (gGatherTableIds ts)
+  gGatherTableIds (Named records, ts) = eids <> gGatherTableIds ts
     where
-      eidMap = M.fromListWith (<>)
-        [ ((symbolVal (Proxy :: Proxy table), field, serialize k), [toDynamic record])
+      eids = mconcat
+        [ gatherIds (symbolVal (Proxy :: Proxy table)) (toDynamic record) record
         | record <- records
-        , EId table field k <- gatherIds (symbolVal (Proxy :: Proxy table)) record
-        ]
-
-      efids =
-        [ (table, field, serialize k)
-        | record <- records
-        , EForeignId table field k <- gatherIds (symbolVal (Proxy :: Proxy table)) record
         ]
 
 class GatherTableIds t where
-  gatherTableIds :: t ('Batch 'Unresolved) -> M.Map (TableName, FieldName, B.ByteString) [Dynamic]
+  gatherTableIds :: t ('Batch 'Unresolved) -> [EId]
   default gatherTableIds
     :: HasEot (t ('Batch 'Unresolved))
     => GGatherTableIds (Eot (t ('Batch 'Unresolved)))
     => t ('Batch 'Unresolved)
-    -> M.Map (TableName, FieldName, B.ByteString) [Dynamic]
+    -> [EId]
   gatherTableIds = gGatherTableIds . toEot
 
 -- Expand ----------------------------------------------------------------------
