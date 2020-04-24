@@ -198,8 +198,7 @@ instance
   , Resolve tables r
   , GResolve us rs
 
-  , Functor f
-  , Traversable f
+  , Foldable f
 
   , KnownSymbol table
   , KnownSymbol field
@@ -215,7 +214,8 @@ instance
         lookup (ForeignId k) = rsvMap table field (serialize k)
 
         rsv :: Resolve tables r => f (ForeignRecordId table field u) -> Validation ResolveError (Named x (f (Lazy tables r)))
-        rsv = fmap (Named . fmap Lazy) . sequenceA . fmap ((`bindValidation` resolve rsvMap) . fmap fromDynamic . lookup)
+        -- rsv = fmap (Named . fmap Lazy) . sequenceA . fmap ((`bindValidation` resolve rsvMap) . fmap fromDynamic . lookup)
+        rsv = error "BLA"
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -286,8 +286,8 @@ class ResolveTables t where
 
       rsvRecord table field value = M.lookup (table, field, value) eidMap
 
-      -- rsv table field value
-      --   | trace (show (table, field, value)) False = undefined
+      rsv table field value
+        | trace (show (table, field, value)) False = undefined
       rsv table field value = case rsvRecord table field value of
         Nothing -> extRsvMap table field value
         Just [record] -> Success record

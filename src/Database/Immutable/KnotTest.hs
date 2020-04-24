@@ -56,7 +56,7 @@ data Person tables m = Person
   , employer :: Maybe (ForeignId tables m "employers" "owner") -- could be turned into Maybe ~(Employer Resolved)
   , pid :: Id tables m Word64
   , pid2 :: Id tables m String
-  , other :: Employer tables m
+  -- , other :: Employer tables m
   } deriving (G.Generic, Resolve CompanyTables, GatherIds CompanyTables)
 
 deriving instance Show (Person CompanyTables 'Unresolved)
@@ -68,7 +68,7 @@ data MaybeList a = MaybeList [Maybe a]
 
 data Employer tables m = Employer
   { address :: String
-  , employees :: MaybeList (ForeignId tables m "persons" "pid")  -- could be turned into [~(Person Resolved)]
+  -- , employees :: MaybeList (ForeignId tables m "persons" "pid")  -- could be turned into [~(Person Resolved)]
   , owner :: Id tables m String
   } deriving (G.Generic, Resolve CompanyTables, GatherIds CompanyTables)
 
@@ -92,18 +92,18 @@ personU = Person
   , friend = Just $ ForeignId 0 -- own best friend
   , employer = Just $ ForeignId "boss"
   , pid2 = Id "pid2"
-  , other = Employer
-      { owner = Id "boss2"
-      , address = "yeyea"
-      , employees = MaybeList []
-      }
+  -- , other = Employer
+  --     { owner = Id "boss2"
+  --     , address = "yeyea"
+  --     , employees = MaybeList []
+  --     }
   }
 
 employerU :: Employer CompanyTables 'Unresolved
 employerU = Employer
   { owner = Id "boss"
   , address = "thug mansion"
-  , employees = MaybeList [Just $ ForeignId 0]
+  -- , employees = MaybeList [Just $ ForeignId 0]
   }
 
 personR :: Person CompanyTables 'Resolved
@@ -119,6 +119,8 @@ companyI = CompanyTables
   }
 
 companyR = resolveTables (\_ _ _ -> Failure $ ResolveError []) companyI
+
+r = fmap (fmap (fmap get . employer) . persons) companyR
 
 -- test = do
 --   db <- newIORef (DB M.empty)
