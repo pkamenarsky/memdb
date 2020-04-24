@@ -362,6 +362,34 @@ class GatherTableIds t where
     -> [EId]
   gatherTableIds = gGatherTableIds . toEot
 
+--------------------------------------------------------------------------------
+
+class KnitRecod (tables :: TableMode -> *) u where
+  resolve
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    -> u tables 'Unresolved
+    -> u tables 'Resolved
+  default resolve
+    :: HasEot (u tables 'Unresolved)
+    => HasEot (u tables 'Resolved)
+    => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
+
+    => (TableName -> FieldName -> B.ByteString -> Dynamic)
+    -> u tables 'Unresolved
+    -> u tables 'Resolved
+  resolve rsvMap = fromEot . gResolve rsvMap . toEot
+
+  gatherIds :: TableName -> Dynamic -> u tables 'Unresolved -> [EId]
+  default gatherIds'
+    :: HasEot (u tables 'Unresolved)
+    => GGatherIds (Eot (u tables 'Unresolved))
+
+    => TableName
+    -> Dynamic
+    -> u tables 'Unresolved
+    -> [EId]
+  gatherIds table record = gGatherIds table record . toEot
+
 -- Expand ----------------------------------------------------------------------
 
 type family ExpandRecord (parent :: Symbol) (record :: *) where
