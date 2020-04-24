@@ -32,7 +32,6 @@ import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
 import           Data.Traversable (sequenceA)
-import           Data.Validation (Validation (..), bindValidation)
 import qualified Data.Set as S
 import           Data.Word (Word64)
 
@@ -150,25 +149,25 @@ instance Semigroup ResolveError where
 
 class GResolve u r where
   gResolve
-    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> u
-    -> Validation ResolveError r
+    -> r
 
 instance GResolve () () where
-  gResolve _ () = Success ()
+  gResolve _ () = ()
 
 instance GResolve Void Void where
   gResolve _ _ = undefined
 
 instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
-  gResolve rsvMap (Left u) = Left <$> gResolve rsvMap u 
-  gResolve rsvMap (Right u) = Right <$> gResolve rsvMap u 
+  gResolve rsvMap (Left u) = Left $ gResolve rsvMap u 
+  gResolve rsvMap (Right u) = Right $ gResolve rsvMap u 
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve rsvMap (u, us) = (u,) <$> gResolve rsvMap us
+  gResolve rsvMap (u, us) = (u, gResolve rsvMap us)
 
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
-  gResolve rsvMap (Named (Id u), us) = (Named u,) <$> gResolve rsvMap us
+  gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
 
 instance
   ( Serialize u
@@ -183,12 +182,12 @@ instance
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
     gResolve rsvMap (Named (ForeignId k), us)
-      = (,) <$> rsv <*> gResolve rsvMap us
+      = ( Named $ Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
+        , gResolve rsvMap us
+        )
       where
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
-
-        rsv = fmap fromDynamic (rsvMap table field (serialize k)) `bindValidation` \rsvRecord -> fmap (Named . Lazy) $ resolve rsvMap rsvRecord
 
 instance
   ( Serialize u
@@ -198,24 +197,19 @@ instance
   , Resolve tables r
   , GResolve us rs
 
-  , Foldable f
+  , Functor f
 
   , KnownSymbol table
   , KnownSymbol field
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve rsvMap (Named fid, us)
-      = (,) <$> rsv fid <*> gResolve rsvMap us
+    gResolve rsvMap (Named f, us)
+      = ( Named $ flip fmap f $ \(ForeignId k) -> Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
+        , gResolve rsvMap us
+        )
       where
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
-
-        lookup :: Serialize t => Show t => ForeignRecordId table field t -> Validation ResolveError Dynamic
-        lookup (ForeignId k) = rsvMap table field (serialize k)
-
-        rsv :: Resolve tables r => f (ForeignRecordId table field u) -> Validation ResolveError (Named x (f (Lazy tables r)))
-        -- rsv = fmap (Named . fmap Lazy) . sequenceA . fmap ((`bindValidation` resolve rsvMap) . fmap fromDynamic . lookup)
-        rsv = error "BLA"
 
 instance
   ( Serialize (r tables 'Unresolved)
@@ -224,65 +218,62 @@ instance
   , GResolve us rs
   ) =>
   GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
-    gResolve rsvMap (Named u, us)
-      = (,) <$> fmap Named (resolve rsvMap u)
-            <*> gResolve rsvMap us
+    gResolve rsvMap (Named u, us) = (Named $ resolve rsvMap u, gResolve rsvMap us)
 
 class Resolve (tables :: TableMode -> *) u where
   resolve
-    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> u tables 'Unresolved
-    -> Validation ResolveError (u tables 'Resolved)
+    -> u tables 'Resolved
   default resolve
     :: HasEot (u tables 'Unresolved)
     => HasEot (u tables 'Resolved)
     => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
 
-    => (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
+    => (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> u tables 'Unresolved
-    -> Validation ResolveError (u tables 'Resolved)
-  resolve rsvMap = fmap fromEot . gResolve rsvMap . toEot
+    -> u tables 'Resolved
+  resolve rsvMap = fromEot . gResolve rsvMap . toEot
 
 -- ResolveTables ---------------------------------------------------------------
 
 class GResolveTables u t where
   gResolveTables
-    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> u
-    -> Validation ResolveError t
+    -> t
 
 instance GResolveTables () () where
-  gResolveTables _ () = Success ()
+  gResolveTables _ () = ()
 
 instance GResolveTables u t => GResolveTables (Either u Void) (Either t Void) where
-  gResolveTables rsvMap (Left u) = Left <$> gResolveTables rsvMap u
+  gResolveTables rsvMap (Left u) = Left $ gResolveTables rsvMap u
   gResolveTables _ _ = undefined
 
 instance
   ( GResolveTables us ts
   , Resolve tables t 
   ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
-    gResolveTables rsvMap (Named ts, us) =
-      (,) <$> fmap Named (traverse (resolve rsvMap) ts)
-          <*> gResolveTables rsvMap us
+    gResolveTables rsvMap (Named ts, us)
+      = (Named $ map (resolve rsvMap) ts, gResolveTables rsvMap us)
 
 class ResolveTables t where
   resolveTables
-    :: (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> t ('Batch 'Unresolved)
-    -> Validation ResolveError (t ('Batch 'Resolved))
+    -> Either ResolveError (t ('Batch 'Resolved))
   default resolveTables
     :: HasEot (t ('Batch 'Unresolved))
     => HasEot (t ('Batch 'Resolved))
     => GResolveTables (Eot (t ('Batch 'Unresolved))) (Eot (t ('Batch 'Resolved)))
     => GatherTableIds t
 
-    => (TableName -> FieldName -> B.ByteString -> Validation ResolveError Dynamic)
+    => (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> t ('Batch 'Unresolved)
-    -> Validation ResolveError (t ('Batch 'Resolved))
-  resolveTables extRsvMap u = fromEot <$> gResolveTables rsv (toEot u)
+    -> Either ResolveError (t ('Batch 'Resolved))
+  resolveTables extRsvMap u = Right $ fromEot $ gResolveTables rsv (toEot u)
     where
-      eidMap = trace (show $ gatherTableIds u) $ gatherTableIds u
+      eidMap = gatherTableIds u
 
       rsvRecord table field value = M.lookup (table, field, value) eidMap
 
@@ -290,32 +281,32 @@ class ResolveTables t where
         | trace (show (table, field, value)) False = undefined
       rsv table field value = case rsvRecord table field value of
         Nothing -> extRsvMap table field value
-        Just [record] -> Success record
+        Just [record] -> record
         _ -> error "resolveTables: Repeating ids"
 
 -- GatherIds -------------------------------------------------------------------
 
 data EId
-  = forall t. (Show t, Serialize t) => EId FieldName t
+  = forall t. (Show t, Serialize t) => EId TableName FieldName t
   | forall t. (Show t, Serialize t) => EForeignId TableName FieldName t
 
 deriving instance Show EId
 
 class GGatherIds u where
-  gGatherIds :: u -> [EId]
+  gGatherIds :: TableName -> u -> [EId]
 
 instance GGatherIds () where
-  gGatherIds () = []
+  gGatherIds _ () = []
 
 instance GGatherIds Void where
-  gGatherIds _ = undefined
+  gGatherIds _ _ = undefined
 
 instance (GGatherIds u, GGatherIds v) => GGatherIds (Either u v) where
-  gGatherIds (Left u) = gGatherIds u
-  gGatherIds (Right v) = gGatherIds v
+  gGatherIds table (Left u) = gGatherIds table u
+  gGatherIds table (Right v) = gGatherIds table v
 
 instance GGatherIds us => GGatherIds (Named field u, us) where
-  gGatherIds (_, us) = gGatherIds us
+  gGatherIds table (_, us) = gGatherIds table us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -326,7 +317,7 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field (RecordId t), us) where
-    gGatherIds (Named (Id k), us) = EId (symbolVal (Proxy :: Proxy field)) k:gGatherIds us
+    gGatherIds table (Named (Id k), us) = EId table (symbolVal (Proxy :: Proxy field)) k:gGatherIds table us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -338,7 +329,7 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (ForeignRecordId table field t), us) where
-    gGatherIds (Named (ForeignId k), us) = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k:gGatherIds us
+    gGatherIds table (Named (ForeignId k), us) = EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k:gGatherIds table us
 
 instance {-# OVERLAPPING #-}
   ( Serialize t
@@ -353,7 +344,7 @@ instance {-# OVERLAPPING #-}
   , KnownSymbol field
   ) =>
   GGatherIds (Named field' (f (ForeignRecordId table field t)), us) where
-    gGatherIds (Named f, us) = eids <> gGatherIds us
+    gGatherIds table (Named f, us) = eids <> gGatherIds table us
       where
         eids =
           [ EForeignId (symbolVal (Proxy :: Proxy table)) (symbolVal (Proxy :: Proxy field)) k
@@ -361,14 +352,15 @@ instance {-# OVERLAPPING #-}
           ]
 
 class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: u tables 'Unresolved -> [EId]
+  gatherIds :: TableName -> u tables 'Unresolved -> [EId]
   default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
 
-    => u tables 'Unresolved
+    => TableName
+    -> u tables 'Unresolved
     -> [EId]
-  gatherIds = gGatherIds . toEot
+  gatherIds table = gGatherIds table . toEot
 
 -- GatherTableIds --------------------------------------------------------------
 
@@ -405,7 +397,13 @@ instance ( GGatherTableIds ts
       eidMap = M.fromListWith (<>)
         [ ((symbolVal (Proxy :: Proxy table), field, serialize k), [toDynamic record])
         | record <- records
-        , EId field k <- gatherIds record
+        , EId table field k <- gatherIds (symbolVal (Proxy :: Proxy table)) record
+        ]
+
+      efids =
+        [ (table, field, serialize k)
+        | record <- records
+        , EForeignId table field k <- gatherIds (symbolVal (Proxy :: Proxy table)) record
         ]
 
 class GatherTableIds t where
