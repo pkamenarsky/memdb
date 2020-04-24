@@ -11,7 +11,25 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Database.Immutable.Knot where
+module Database.Immutable.Knot
+  ( KnitRecord
+  , KnitTables
+
+  , Id
+  , ForeignId
+
+  , Lazy (..)
+
+  , RecordId (..)
+  , ForeignRecordId (..)
+
+  , Table
+
+  , TableMode (..)
+  , RecordMode (..)
+
+  , knit
+  )where
 
 import           Control.DeepSeq (NFData)
 
@@ -34,9 +52,6 @@ import           Unsafe.Coerce (unsafeCoerce)
 
 serialize :: S.Serialize a => a -> B.ByteString
 serialize = S.runPut . S.put
-
-unsafeParse :: S.Serialize a => B.ByteString -> a
-unsafeParse = either (error "unsafeParse") id . S.runGet S.get
 
 type family Fst a where
   Fst '(a, b) = a
@@ -79,160 +94,6 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
     tables
     (Fst (LookupTableType table (Eot (tables 'Cannonical))))
 
--- Resolve ---------------------------------------------------------------------
-
-newtype ResolveError = ResolveError [(TableName, FieldName, B.ByteString)]
-  deriving (Semigroup, Monoid, Show)
-
-class GResolve u r where
-  gResolve
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> u
-    -> r
-
-instance GResolve () () where
-  gResolve _ () = ()
-
-instance GResolve Void Void where
-  gResolve _ _ = undefined
-
-instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
-  gResolve rsvMap (Left u) = Left $ gResolve rsvMap u 
-  gResolve rsvMap (Right u) = Right $ gResolve rsvMap u 
-
-instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve rsvMap (u, us) = (u, gResolve rsvMap us)
-
-instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
-  gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
-
-instance
-  ( Serialize u
-  , Serialize (r tables 'Unresolved)
-  , Show u
-
-  , Resolve (tables :: TableMode -> *) r
-  , GResolve us rs
-
-  , KnownSymbol table
-  , KnownSymbol field
-  ) =>
-  GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-    gResolve rsvMap (Named (ForeignId k), us)
-      = ( Named $ Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
-        , gResolve rsvMap us
-        )
-      where
-        table = symbolVal (Proxy :: Proxy table)
-        field = symbolVal (Proxy :: Proxy field)
-
-instance
-  ( Serialize u
-  , Serialize (r tables 'Unresolved)
-  , Show u
-
-  , Resolve tables r
-  , GResolve us rs
-
-  , Functor f
-
-  , KnownSymbol table
-  , KnownSymbol field
-  ) =>
-  GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve rsvMap (Named f, us)
-      = ( Named $ flip fmap f $ \(ForeignId k) -> Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
-        , gResolve rsvMap us
-        )
-      where
-        table = symbolVal (Proxy :: Proxy table)
-        field = symbolVal (Proxy :: Proxy field)
-
-instance
-  ( Serialize (r tables 'Unresolved)
-
-  , Resolve tables r
-  , GResolve us rs
-  ) =>
-  GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
-    gResolve rsvMap (Named u, us) = (Named $ resolve rsvMap u, gResolve rsvMap us)
-
-class Resolve (tables :: TableMode -> *) u where
-  resolve
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> u tables 'Unresolved
-    -> u tables 'Resolved
-  default resolve
-    :: HasEot (u tables 'Unresolved)
-    => HasEot (u tables 'Resolved)
-    => GResolve (Eot (u tables 'Unresolved)) (Eot (u tables 'Resolved))
-
-    => (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> u tables 'Unresolved
-    -> u tables 'Resolved
-  resolve rsvMap = fromEot . gResolve rsvMap . toEot
-
--- ResolveTables ---------------------------------------------------------------
-
-class GResolveTables u t where
-  gResolveTables
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> u
-    -> t
-
-instance GResolveTables () () where
-  gResolveTables _ () = ()
-
-instance GResolveTables u t => GResolveTables (Either u Void) (Either t Void) where
-  gResolveTables rsvMap (Left u) = Left $ gResolveTables rsvMap u
-  gResolveTables _ _ = undefined
-
-instance
-  ( GResolveTables us ts
-  , Resolve tables t 
-  ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
-    gResolveTables rsvMap (Named ts, us)
-      = (Named $ map (resolve rsvMap) ts, gResolveTables rsvMap us)
-
-class ResolveTables t where
-  resolveTables
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> t ('Batch 'Unresolved)
-    -> Either ResolveError (t ('Batch 'Resolved))
-  default resolveTables
-    :: HasEot (t ('Batch 'Unresolved))
-    => HasEot (t ('Batch 'Resolved))
-    => GResolveTables (Eot (t ('Batch 'Unresolved))) (Eot (t ('Batch 'Resolved)))
-    => GatherTableIds t
-
-    => (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> t ('Batch 'Unresolved)
-    -> Either ResolveError (t ('Batch 'Resolved))
-  resolveTables extRsvMap u
-    | [] <- missingIds = Right $ fromEot $ gResolveTables rsv (toEot u)
-    | otherwise = Left $ ResolveError missingIds
-    where
-      eids = gatherTableIds u
-
-      eidMap = M.fromListWith (<>)
-        [ ((table, field, serialize k), [record])
-        | EId table field k record <- eids
-        ]
-
-      missingIds = catMaybes
-        [ case M.lookup (table, field, serialize k) eidMap of
-            Nothing -> Just (table, field, serialize k)
-            Just _ -> Nothing
-        | EForeignId table field k <- eids
-        ]
-
-      rsvRecord table field value = M.lookup (table, field, value) eidMap
-
-      rsv table field value = case rsvRecord table field value of
-        Nothing -> extRsvMap table field value
-        Just [record] -> record
-        _ -> error "resolveTables: Repeating ids"
-
 -- GatherIds -------------------------------------------------------------------
 
 data EId
@@ -247,10 +108,10 @@ instance Show Dynamic where
   show _ = "Dynamic"
 
 toDynamic :: a -> Dynamic
-toDynamic = unsafeCoerce
+toDynamic = Dynamic . unsafeCoerce
 
 fromDynamic :: Dynamic -> a
-fromDynamic = unsafeCoerce
+fromDynamic (Dynamic v) = unsafeCoerce v
 
 --------------------------------------------------------------------------------
 
@@ -315,18 +176,6 @@ instance {-# OVERLAPPING #-}
           | ForeignId k <- toList f
           ]
 
-class GatherIds (tables :: TableMode -> *) u where
-  gatherIds :: TableName -> Dynamic -> u tables 'Unresolved -> [EId]
-  default gatherIds
-    :: HasEot (u tables 'Unresolved)
-    => GGatherIds (Eot (u tables 'Unresolved))
-
-    => TableName
-    -> Dynamic
-    -> u tables 'Unresolved
-    -> [EId]
-  gatherIds table record = gGatherIds table record . toEot
-
 -- GatherTableIds --------------------------------------------------------------
 
 class GGatherTableIds t where
@@ -343,7 +192,7 @@ instance (GGatherTableIds t, GGatherTableIds u) => GGatherTableIds (Either t u) 
   gGatherTableIds (Right u) = gGatherTableIds u
 
 instance ( GGatherTableIds ts
-         , GatherIds tables r
+         , KnitRecord tables r
          , KnownSymbol table
          ) => GGatherTableIds (Named table [r tables 'Unresolved], ts) where
   gGatherTableIds (Named records, ts) = eids <> gGatherTableIds ts
@@ -353,18 +202,109 @@ instance ( GGatherTableIds ts
         | record <- records
         ]
 
-class GatherTableIds t where
-  gatherTableIds :: t ('Batch 'Unresolved) -> [EId]
-  default gatherTableIds
-    :: HasEot (t ('Batch 'Unresolved))
-    => GGatherTableIds (Eot (t ('Batch 'Unresolved)))
-    => t ('Batch 'Unresolved)
-    -> [EId]
-  gatherTableIds = gGatherTableIds . toEot
+-- Resolve ---------------------------------------------------------------------
 
---------------------------------------------------------------------------------
+newtype ResolveError = ResolveError [(TableName, FieldName, B.ByteString)]
+  deriving (Semigroup, Monoid, Show)
 
-class KnitRecod (tables :: TableMode -> *) u where
+class GResolve u r where
+  gResolve
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    -> u
+    -> r
+
+instance GResolve () () where
+  gResolve _ () = ()
+
+instance GResolve Void Void where
+  gResolve _ _ = undefined
+
+instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
+  gResolve rsvMap (Left u) = Left $ gResolve rsvMap u 
+  gResolve rsvMap (Right u) = Right $ gResolve rsvMap u 
+
+instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
+  gResolve rsvMap (u, us) = (u, gResolve rsvMap us)
+
+instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
+  gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
+
+instance
+  ( Serialize u
+  , Serialize (r tables 'Unresolved)
+  , Show u
+
+  , KnitRecord tables r
+  , GResolve us rs
+
+  , KnownSymbol table
+  , KnownSymbol field
+  ) =>
+  GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
+    gResolve rsvMap (Named (ForeignId k), us)
+      = ( Named $ Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
+        , gResolve rsvMap us
+        )
+      where
+        table = symbolVal (Proxy :: Proxy table)
+        field = symbolVal (Proxy :: Proxy field)
+
+instance
+  ( Serialize u
+  , Serialize (r tables 'Unresolved)
+  , Show u
+
+  , KnitRecord tables r
+  , GResolve us rs
+
+  , Functor f
+
+  , KnownSymbol table
+  , KnownSymbol field
+  ) =>
+  GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
+    gResolve rsvMap (Named f, us)
+      = ( Named $ flip fmap f $ \(ForeignId k) -> Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (serialize k))
+        , gResolve rsvMap us
+        )
+      where
+        table = symbolVal (Proxy :: Proxy table)
+        field = symbolVal (Proxy :: Proxy field)
+
+instance
+  ( Serialize (r tables 'Unresolved)
+
+  , KnitRecord tables r
+  , GResolve us rs
+  ) =>
+  GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
+    gResolve rsvMap (Named u, us) = (Named $ resolve rsvMap u, gResolve rsvMap us)
+
+-- ResolveTables ---------------------------------------------------------------
+
+class GResolveTables u t where
+  gResolveTables
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    -> u
+    -> t
+
+instance GResolveTables () () where
+  gResolveTables _ () = ()
+
+instance GResolveTables u t => GResolveTables (Either u Void) (Either t Void) where
+  gResolveTables rsvMap (Left u) = Left $ gResolveTables rsvMap u
+  gResolveTables _ _ = undefined
+
+instance
+  ( GResolveTables us ts
+  , KnitRecord tables t 
+  ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
+    gResolveTables rsvMap (Named ts, us)
+      = (Named $ map (resolve rsvMap) ts, gResolveTables rsvMap us)
+
+-- KnitRecord ------------------------------------------------------------------
+
+class KnitRecord (tables :: TableMode -> *) u where
   resolve
     :: (TableName -> FieldName -> B.ByteString -> Dynamic)
     -> u tables 'Unresolved
@@ -380,7 +320,7 @@ class KnitRecod (tables :: TableMode -> *) u where
   resolve rsvMap = fromEot . gResolve rsvMap . toEot
 
   gatherIds :: TableName -> Dynamic -> u tables 'Unresolved -> [EId]
-  default gatherIds'
+  default gatherIds
     :: HasEot (u tables 'Unresolved)
     => GGatherIds (Eot (u tables 'Unresolved))
 
@@ -389,6 +329,55 @@ class KnitRecod (tables :: TableMode -> *) u where
     -> u tables 'Unresolved
     -> [EId]
   gatherIds table record = gGatherIds table record . toEot
+
+-- KnitTables ------------------------------------------------------------------
+
+class KnitTables t where
+  resolveTables
+    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
+    -> t ('Batch 'Unresolved)
+    -> Either ResolveError (t ('Batch 'Resolved))
+  default resolveTables
+    :: HasEot (t ('Batch 'Unresolved))
+    => HasEot (t ('Batch 'Resolved))
+    => GResolveTables (Eot (t ('Batch 'Unresolved))) (Eot (t ('Batch 'Resolved)))
+    => KnitTables t
+
+    => (TableName -> FieldName -> B.ByteString -> Dynamic)
+    -> t ('Batch 'Unresolved)
+    -> Either ResolveError (t ('Batch 'Resolved))
+  resolveTables extRsvMap u
+    | [] <- missingIds = Right $ fromEot $ gResolveTables rsv (toEot u)
+    | otherwise = Left $ ResolveError missingIds
+    where
+      eids = gatherTableIds u
+
+      eidMap = M.fromListWith (<>)
+        [ ((table, field, serialize k), [record])
+        | EId table field k record <- eids
+        ]
+
+      missingIds = catMaybes
+        [ case M.lookup (table, field, serialize k) eidMap of
+            Nothing -> Just (table, field, serialize k)
+            Just _ -> Nothing
+        | EForeignId table field k <- eids
+        ]
+
+      rsvRecord table field value = M.lookup (table, field, value) eidMap
+
+      rsv table field value = case rsvRecord table field value of
+        Nothing -> extRsvMap table field value
+        Just [record] -> record
+        _ -> error "resolveTables: Repeating ids"
+
+  gatherTableIds :: t ('Batch 'Unresolved) -> [EId]
+  default gatherTableIds
+    :: HasEot (t ('Batch 'Unresolved))
+    => GGatherTableIds (Eot (t ('Batch 'Unresolved)))
+    => t ('Batch 'Unresolved)
+    -> [EId]
+  gatherTableIds = gGatherTableIds . toEot
 
 -- Expand ----------------------------------------------------------------------
 
@@ -415,10 +404,16 @@ type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
 
 -- Table -----------------------------------------------------------------------
 
-data TableMode = LookupFields | forall r. Batch r | Cannonical | Modify
+data TableMode = forall r. Batch r | Cannonical | Modify
 
 type family Table (tables :: TableMode -> *) (c :: TableMode) table where
   Table tables 'Cannonical table = table tables 'Done
 
   Table tables ('Batch r) table = [table tables r]
   Table tables 'Modify table = (table tables 'Unresolved -> Maybe (table tables 'Unresolved))
+
+--------------------------------------------------------------------------------
+
+knit :: KnitTables t => t ('Batch 'Unresolved) -> Either ResolveError (t ('Batch 'Resolved))
+knit = resolveTables
+  (error "Inconsistent record (this is a bug, the consistency check should have caught this")
