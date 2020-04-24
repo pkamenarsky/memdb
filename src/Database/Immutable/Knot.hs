@@ -1,90 +1,34 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
-{-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE TypeOperators #-}
-{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Database.Immutable.Knot where
 
-import           Control.DeepSeq (NFData (rnf))
+import           Control.DeepSeq (NFData)
 
 import qualified Data.ByteString as B
 import           Data.Foldable (Foldable, toList)
 import qualified Data.Map as M
-import qualified Data.Map.Monoidal as MM
-import           Data.Maybe (catMaybes, fromJust, fromMaybe)
-import           Data.Semigroup (Semigroup, Sum (Sum), Last (Last))
+import           Data.Maybe (catMaybes)
+import           Data.Semigroup (Semigroup)
 import qualified Data.Serialize as S
 import           Data.Serialize (Serialize)
 import           Data.Semigroup ((<>))
-import           Data.Traversable (sequenceA)
-import qualified Data.Set as S
-import           Data.Word (Word64)
 
-import qualified GHC.Generics as G
 import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
 import           Unsafe.Coerce (unsafeCoerce)
-
-import           Prelude hiding (lookup, length)
-import           Debug.Trace
-
--- TODO: test: resolve with same ids always resolves to last record
-
--- TODO: Resolve ForeignRelativeId, etc
--- TODO: nest tables
-
--- TODO: Map -> HashMap
-
--- TODO: resolve with internal batch ids, then go to db
--- TODO: ResolveError
-
--- TODO: ReadBatches returns only 'Unresolved tables, use ResolveTables to resolve
-
--- TODO: LookupFns on table level? no danger of undefined fields...
-
--- TODO: Absolute / Relative ids on type level
-
--- TODO: do we need ErrorOnDuplicateIndexes? standard behaviour is just to overwrite
-
--- TODO: can we derive multiple classes at once? or combine everything into a single class? however, not all classes are desirable every time (i.e. nested records don't need InsertTables, etc)
-
--- TODO: 3 concepts:
---   * in place editing, no concept of batch reading, batches only for insert consistency
---   * append only, delete happens by mapping & filtering
---   * reactive LookupFns
---     * keys subscriptions easy
---     * range subscriptions also, if restricted to e.g. between and startsWith
---   * can we unify? at least the Table concept seems transferable; maybe split into combination of Backend classes?
-
--- TODO: split Backend typeclass into lookup and insert
-
--- TODO: error -> MonadError
--- TODO: record <-> table naming
-
--- DONE: absolute/relative ids
--- DONE: [leveldb] don't read table sizes while inserting, store sizes in MVar (db can't be opened multiple times)
--- DONE: consistency checks (must be done on insert, want early abort/error reporting)
--- DONE: simplify lookupRecord (only operate on ByteStrings, keep Backend simple)
--- DONE: batches
--- DONE: insert -> insertTables
--- DONE: ModifyTables
 
 --------------------------------------------------------------------------------
 
@@ -138,14 +82,7 @@ type family ForeignId (tables :: TableMode -> *) (recordMode :: RecordMode) (tab
 -- Resolve ---------------------------------------------------------------------
 
 newtype ResolveError = ResolveError [(TableName, FieldName, B.ByteString)]
-  deriving Show
-
-instance Monoid ResolveError where
-  mempty = ResolveError []
-  mappend = (<>)
-
-instance Semigroup ResolveError where
-  ResolveError es <> ResolveError gs = ResolveError (es <> gs)
+  deriving (Semigroup, Monoid, Show)
 
 class GResolve u r where
   gResolve
@@ -291,8 +228,6 @@ class ResolveTables t where
 
       rsvRecord table field value = M.lookup (table, field, value) eidMap
 
-      rsv table field value
-        | trace (show (table, field, value)) False = undefined
       rsv table field value = case rsvRecord table field value of
         Nothing -> extRsvMap table field value
         Just [record] -> record
