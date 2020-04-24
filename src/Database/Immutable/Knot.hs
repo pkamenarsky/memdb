@@ -282,11 +282,13 @@ class ResolveTables t where
     -> Validation ResolveError (t ('Batch 'Resolved))
   resolveTables extRsvMap u = fromEot <$> gResolveTables rsv (toEot u)
     where
-      eidMap = gatherTableIds u
+      eidMap = trace (show $ gatherTableIds u) $ gatherTableIds u
 
       rsvRecord table field value = M.lookup (table, field, value) eidMap
 
-      rsv table field value = case rsvRecord table field (serialize value) of
+      -- rsv table field value
+      --   | trace (show (table, field, value)) False = undefined
+      rsv table field value = case rsvRecord table field value of
         Nothing -> extRsvMap table field value
         Just [record] -> Success record
         _ -> error "resolveTables: Repeating ids"
@@ -371,6 +373,9 @@ class GatherIds (tables :: TableMode -> *) u where
 -- GatherTableIds --------------------------------------------------------------
 
 newtype Dynamic = Dynamic ()
+
+instance Show Dynamic where
+  show _ = "Dynamic"
 
 toDynamic :: a -> Dynamic
 toDynamic = unsafeCoerce
