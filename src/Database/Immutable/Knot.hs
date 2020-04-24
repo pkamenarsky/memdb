@@ -231,7 +231,6 @@ instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs)
 
 instance
   ( Serialize u
-  , Serialize (r tables 'Unresolved)
   , Show u
 
   , KnitRecord tables r
@@ -251,7 +250,6 @@ instance
 
 instance
   ( Serialize u
-  , Serialize (r tables 'Unresolved)
   , Show u
 
   , KnitRecord tables r
@@ -272,9 +270,7 @@ instance
         field = symbolVal (Proxy :: Proxy field)
 
 instance
-  ( Serialize (r tables 'Unresolved)
-
-  , KnitRecord tables r
+  ( KnitRecord tables r
   , GResolve us rs
   ) =>
   GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
@@ -283,10 +279,7 @@ instance
 -- ResolveTables ---------------------------------------------------------------
 
 class GResolveTables u t where
-  gResolveTables
-    :: (TableName -> FieldName -> B.ByteString -> Dynamic)
-    -> u
-    -> t
+  gResolveTables :: (TableName -> FieldName -> B.ByteString -> Dynamic) -> u -> t
 
 instance GResolveTables () () where
   gResolveTables _ () = ()
