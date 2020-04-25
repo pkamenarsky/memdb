@@ -264,6 +264,14 @@ instance
   GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
     gResolve rsvMap (Named u, us) = (Named $ resolve rsvMap u, gResolve rsvMap us)
 
+instance
+  ( KnitRecord tables r
+  , GResolve us rs
+  , Functor f
+  ) =>
+  GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
+    gResolve rsvMap (Named u, us) = (Named $ fmap (resolve rsvMap) u, gResolve rsvMap us)
+
 -- ResolveTables ---------------------------------------------------------------
 
 class GResolveTables u t where
