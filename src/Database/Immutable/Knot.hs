@@ -15,18 +15,18 @@
 module Database.Immutable.Knot
   ( KnitRecord
   , KnitTables
+  , Mode (..)
+
+  , Table
+  , Lazy (..)
 
   , Id
   , ForeignId
 
-  , Lazy (..)
-
   , RecordId (..)
   , ForeignRecordId (..)
 
-  , Table
-
-  , Mode (..)
+  , ResolveError (..)
 
   , knit
   )where
