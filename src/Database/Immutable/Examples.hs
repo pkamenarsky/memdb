@@ -16,7 +16,7 @@ import           Database.Immutable.Knot
 -- Stolen from https://hackage.haskell.org/package/tie-knot-0.2/docs/Data-Knot.html
 
 data Person tables m = Person
-  { name  :: Id tables m String
+  { name  :: Maybe (Id tables m String)
   , loves :: [ForeignId tables m "persons" "name"]
   } deriving (Generic, KnitRecord Model)
 

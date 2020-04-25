@@ -237,6 +237,9 @@ instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
   gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
 
+instance (GResolve us rs, Functor f) => GResolve (Named x (f (RecordId u)), us) (Named x (f u), rs) where
+  gResolve rsvMap (Named u', us) = (Named $ fmap (\(Id u) -> u) u', gResolve rsvMap us)
+
 instance
   ( Show u
 
@@ -400,6 +403,7 @@ type family ExpandRecord (parent :: Symbol) (record :: *) where
   ExpandRecord parent () = ()
   ExpandRecord parent (Either fields Eot.Void) = ExpandRecord parent fields
   ExpandRecord parent (Eot.Named name (RecordId a), fields) = (Eot.Named name a, ExpandRecord parent fields)
+  ExpandRecord parent (Eot.Named name (f (RecordId a)), fields) = (Eot.Named name (f a), ExpandRecord parent fields)
   ExpandRecord parent (a, fields) = ExpandRecord parent fields
 
 type family LookupTableType (table :: Symbol) (eot :: *) :: (((Mode -> *) -> Mode -> *), *) where
