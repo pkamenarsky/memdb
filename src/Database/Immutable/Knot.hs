@@ -153,7 +153,23 @@ instance {-# OVERLAPPING #-}
   , GGatherIds us
 
   , Foldable f
-  , Functor f
+
+  , KnownSymbol field
+  ) =>
+  GGatherIds (Named field (f (RecordId t)), us) where
+    gGatherIds table record (Named f, us) = eids <> gGatherIds table record us
+      where
+        eids =
+          [ EId table (symbolVal (Proxy :: Proxy field)) k record
+          | Id k <- toList f
+          ]
+
+instance {-# OVERLAPPING #-}
+  ( Show t
+
+  , GGatherIds us
+
+  , Foldable f
 
   , KnownSymbol table
   , KnownSymbol field
