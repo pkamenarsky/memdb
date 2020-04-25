@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -37,6 +38,7 @@ import qualified Data.Map as M
 import           Data.Maybe (catMaybes)
 import           Data.Semigroup ((<>))
 
+import           GHC.Generics (Generic)
 import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
 import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
@@ -60,7 +62,7 @@ type FieldValue = String
 data Mode = Resolved | Unresolved | Done
 
 newtype RecordId t = Id t
-  deriving (Show, Eq, Ord, Num, NFData)
+  deriving (Show, Eq, Ord, Num, Generic, NFData)
 
 type family Id (tables :: Mode -> *) (recordMode :: Mode) t where
   Id tables 'Done t = RecordId t
@@ -75,7 +77,7 @@ instance Show (Lazy tables a) where
   show _ = "Lazy"
 
 newtype ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
-  deriving (Show, Eq, Ord, Num, NFData)
+  deriving (Show, Eq, Ord, Num, Generic, NFData)
 
 type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = ()
