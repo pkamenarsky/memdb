@@ -417,6 +417,7 @@ type family LookupTableType (table :: Symbol) (eot :: *) :: (((Mode -> *) -> Mod
 
 type family LookupFieldType (field :: Symbol) (eot :: *) :: * where
   LookupFieldType name (Either records Eot.Void) = LookupFieldType name records
+  LookupFieldType name (Eot.Named name (Maybe field), fields) = field
   LookupFieldType name (Eot.Named name field, fields) = field
   LookupFieldType name (Eot.Named otherName field, fields) = LookupFieldType name fields
   LookupFieldType name eot = TypeError ('Text "Can't lookup field type")
