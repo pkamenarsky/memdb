@@ -9,6 +9,7 @@
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE UndecidableInstances #-}
 
@@ -35,7 +36,7 @@ import           Control.DeepSeq (NFData)
 
 import           Data.Foldable (Foldable, toList)
 import qualified Data.Map as M
-import           Data.Maybe (catMaybes)
+import           Data.Maybe (catMaybes, mapMaybe)
 import           Data.Semigroup ((<>))
 
 import           GHC.Generics (Generic)
@@ -61,8 +62,10 @@ type FieldValue = String
 
 data Mode = Resolved | Unresolved | Done
 
-newtype RecordId t = Id t
-  deriving (Show, Eq, Ord, Num, Generic, NFData)
+data RecordId t = Id { getId :: t } | Remove
+  deriving (Show, Eq, Ord, Generic)
+
+instance NFData t => NFData (RecordId t)
 
 type family Id (tables :: Mode -> *) (recordMode :: Mode) t where
   Id tables 'Done t = RecordId t
@@ -76,8 +79,9 @@ data Lazy tables a = Lazy
 instance Show (Lazy tables a) where
   show _ = "Lazy"
 
-newtype ForeignRecordId (table :: Symbol) (field :: Symbol) t = ForeignId t
-  deriving (Show, Eq, Ord, Num, Generic, NFData)
+newtype ForeignRecordId (table :: Symbol) (field :: Symbol) t
+  = ForeignId { getForeignId :: t }
+    deriving (Show, Eq, Ord, Num, Generic, NFData)
 
 type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbol) (field :: Symbol) where
   ForeignId tables 'Done table field = ()
@@ -134,6 +138,8 @@ instance {-# OVERLAPPING #-}
   GGatherIds (Named field (RecordId t), us) where
     gGatherIds table record (Named (Id k), us)
       = EId table (symbolVal (Proxy :: Proxy field)) k record:gGatherIds table record us
+    gGatherIds table record (Named Remove, us)
+      = gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
   ( Show t
@@ -219,26 +225,27 @@ class GResolve u r where
   gResolve
     :: (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u
-    -> r
+    -> Maybe r
 
 instance GResolve () () where
-  gResolve _ () = ()
+  gResolve _ () = Just ()
 
 instance GResolve Void Void where
   gResolve _ _ = undefined
 
 instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
-  gResolve rsvMap (Left u) = Left $ gResolve rsvMap u 
-  gResolve rsvMap (Right u) = Right $ gResolve rsvMap u 
+  gResolve rsvMap (Left u) = Left <$> gResolve rsvMap u 
+  gResolve rsvMap (Right u) = Right <$> gResolve rsvMap u 
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve rsvMap (u, us) = (u, gResolve rsvMap us)
+  gResolve rsvMap (u, us) = (u,) <$> gResolve rsvMap us
 
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
-  gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
+  gResolve rsvMap (Named (Id u), us) = (Named u,) <$> gResolve rsvMap us
+  gResolve _ (Named Remove, _) = Nothing
 
 instance (GResolve us rs, Functor f) => GResolve (Named x (f (RecordId u)), us) (Named x (f u), rs) where
-  gResolve rsvMap (Named u', us) = (Named $ fmap (\(Id u) -> u) u', gResolve rsvMap us)
+  gResolve rsvMap (Named u, us) = (,) <$> Just (Named (getId <$> u)) <*> gResolve rsvMap us
 
 instance
   ( Show u
@@ -250,10 +257,9 @@ instance
   , KnownSymbol field
   ) =>
   GResolve (Named x (ForeignRecordId table field u), us) (Named x (Lazy tables r), rs) where
-    gResolve rsvMap (Named (ForeignId k), us)
-      = ( Named $ Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (show k))
-        , gResolve rsvMap us
-        )
+    gResolve rsvMap (Named (ForeignId k), us) = (,)
+      <$> (Named . Lazy <$> resolve rsvMap (fromDynamic $ rsvMap table field (show k)))
+      <*> gResolve rsvMap us
       where
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
@@ -264,16 +270,15 @@ instance
   , KnitRecord tables r
   , GResolve us rs
 
-  , Functor f
+  , Traversable f
 
   , KnownSymbol table
   , KnownSymbol field
   ) =>
   GResolve (Named x (f (ForeignRecordId table field u)), us) (Named x (f (Lazy tables r)), rs) where
-    gResolve rsvMap (Named f, us)
-      = ( Named $ flip fmap f $ \(ForeignId k) -> Lazy $ resolve rsvMap (fromDynamic $ rsvMap table field (show k))
-        , gResolve rsvMap us
-        )
+    gResolve rsvMap (Named u, us) = (,)
+      <$> fmap Named (sequenceA $ fmap (\k -> Lazy <$> resolve rsvMap (fromDynamic $ rsvMap table field (show $ getForeignId k))) u)
+      <*> gResolve rsvMap us
       where
         table = symbolVal (Proxy :: Proxy table)
         field = symbolVal (Proxy :: Proxy field)
@@ -283,15 +288,15 @@ instance
   , GResolve us rs
   ) =>
   GResolve (Named x (r tables 'Unresolved), us) (Named x (r tables 'Resolved), rs) where
-    gResolve rsvMap (Named u, us) = (Named $ resolve rsvMap u, gResolve rsvMap us)
+    gResolve rsvMap (Named u, us) = (,) <$> (Named <$> resolve rsvMap u) <*> gResolve rsvMap us
 
 instance
   ( KnitRecord tables r
   , GResolve us rs
-  , Functor f
+  , Traversable f
   ) =>
   GResolve (Named x (f (r tables 'Unresolved)), us) (Named x (f (r tables 'Resolved)), rs) where
-    gResolve rsvMap (Named u, us) = (Named $ fmap (resolve rsvMap) u, gResolve rsvMap us)
+    gResolve rsvMap (Named u, us) = (,) <$> (fmap Named $ sequenceA (fmap (resolve rsvMap) u)) <*> gResolve rsvMap us
 
 -- ResolveTables ---------------------------------------------------------------
 
@@ -310,7 +315,7 @@ instance
   , KnitRecord tables t 
   ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
     gResolveTables rsvMap (Named ts, us)
-      = (Named $ map (resolve rsvMap) ts, gResolveTables rsvMap us)
+      = (Named $ mapMaybe (resolve rsvMap) ts, gResolveTables rsvMap us)
 
 -- KnitRecord ------------------------------------------------------------------
 
@@ -318,7 +323,7 @@ class KnitRecord (tables :: Mode -> *) u where
   resolve
     :: (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u tables 'Unresolved
-    -> u tables 'Resolved
+    -> Maybe (u tables 'Resolved)
   default resolve
     :: HasEot (u tables 'Unresolved)
     => HasEot (u tables 'Resolved)
@@ -326,8 +331,8 @@ class KnitRecord (tables :: Mode -> *) u where
 
     => (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u tables 'Unresolved
-    -> u tables 'Resolved
-  resolve rsvMap = fromEot . gResolve rsvMap . toEot
+    -> Maybe (u tables 'Resolved)
+  resolve rsvMap = fmap fromEot . gResolve rsvMap . toEot
 
   gatherIds :: TableName -> Dynamic -> u tables 'Unresolved -> [EId]
   default gatherIds
