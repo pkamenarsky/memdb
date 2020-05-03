@@ -61,8 +61,10 @@ type FieldValue = String
 
 data Mode = Resolved | Unresolved | Done
 
-newtype RecordId t = Id t
-  deriving (Show, Eq, Ord, Num, Generic, NFData)
+data RecordId t = Id t | Remove
+  deriving (Show, Eq, Ord, Generic)
+
+instance NFData t => NFData (RecordId t)
 
 type family Id (tables :: Mode -> *) (recordMode :: Mode) t where
   Id tables 'Done t = RecordId t
@@ -93,6 +95,7 @@ type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbo
 
 data EId
   = forall t. Show t => EId TableName FieldName t Dynamic
+  | ERemove TableName FieldName Dynamic
   | forall t. Show t => EForeignId TableName FieldName t
 
 deriving instance Show EId
@@ -134,6 +137,8 @@ instance {-# OVERLAPPING #-}
   GGatherIds (Named field (RecordId t), us) where
     gGatherIds table record (Named (Id k), us)
       = EId table (symbolVal (Proxy :: Proxy field)) k record:gGatherIds table record us
+    gGatherIds table record (Named Remove, us)
+      = ERemove table (symbolVal (Proxy :: Proxy field)) record:gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
   ( Show t
@@ -236,6 +241,7 @@ instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
 
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
   gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
+  gResolve rsvMap (Named Remove, us) = (Named (error "gResolve: Remove: this is a bug"), gResolve rsvMap us)
 
 instance (GResolve us rs, Functor f) => GResolve (Named x (f (RecordId u)), us) (Named x (f u), rs) where
   gResolve rsvMap (Named u', us) = (Named $ fmap (\(Id u) -> u) u', gResolve rsvMap us)
