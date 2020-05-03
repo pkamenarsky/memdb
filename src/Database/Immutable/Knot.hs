@@ -213,7 +213,9 @@ instance ( GGatherTableIds ts
 data ResolveError
   = MissingIds [(TableName, FieldName, FieldValue)]
   | RepeatingIds [(TableName, FieldName, FieldValue)]
-  deriving Show
+  deriving (Generic, Show)
+
+instance NFData ResolveError
 
 class GResolve u r where
   gResolve
