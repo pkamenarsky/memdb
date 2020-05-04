@@ -32,9 +32,13 @@ module Database.Immutable.Knot
   )where
 
 import           Control.DeepSeq (NFData)
+import qualified Control.Monad.ST as ST
 
 import           Data.Foldable (Foldable, toList)
+import qualified Data.HashTable.Class as HC
+import qualified Data.HashTable.ST.Basic as H
 import qualified Data.Map as M
+import qualified Data.Set as S
 import           Data.Maybe (catMaybes)
 import           Data.Semigroup ((<>))
 
@@ -61,7 +65,7 @@ type FieldValue = String
 
 data Mode = Resolved | Unresolved | Done
 
-data RecordId t = Id t | Remove
+data RecordId t = Id t | Remove t
   deriving (Show, Eq, Ord, Generic)
 
 instance NFData t => NFData (RecordId t)
@@ -95,7 +99,7 @@ type family ForeignId (tables :: Mode -> *) (recordMode :: Mode) (table :: Symbo
 
 data EId
   = forall t. Show t => EId TableName FieldName t Dynamic
-  | ERemove TableName FieldName Dynamic
+  | forall t. Show t => ERemove TableName FieldName t Dynamic
   | forall t. Show t => EForeignId TableName FieldName t
 
 deriving instance Show EId
@@ -137,8 +141,8 @@ instance {-# OVERLAPPING #-}
   GGatherIds (Named field (RecordId t), us) where
     gGatherIds table record (Named (Id k), us)
       = EId table (symbolVal (Proxy :: Proxy field)) k record:gGatherIds table record us
-    gGatherIds table record (Named Remove, us)
-      = ERemove table (symbolVal (Proxy :: Proxy field)) record:gGatherIds table record us
+    gGatherIds table record (Named (Remove k), us)
+      = ERemove table (symbolVal (Proxy :: Proxy field)) k record:gGatherIds table record us
 
 instance {-# OVERLAPPING #-}
   ( Show t
@@ -190,7 +194,7 @@ instance {-# OVERLAPPING #-}
 -- GatherTableIds --------------------------------------------------------------
 
 class GGatherTableIds t where
-  gGatherTableIds :: t -> [EId]
+  gGatherTableIds :: t -> [(TableName, [[EId]])]
 
 instance GGatherTableIds () where
   gGatherTableIds () = []
@@ -206,10 +210,12 @@ instance ( GGatherTableIds ts
          , KnitRecord tables r
          , KnownSymbol table
          ) => GGatherTableIds (Named table [r tables 'Unresolved], ts) where
-  gGatherTableIds (Named records, ts) = eids <> gGatherTableIds ts
+  gGatherTableIds (Named records, ts) = (table, eids):gGatherTableIds ts
     where
-      eids = mconcat
-        [ gatherIds (symbolVal (Proxy :: Proxy table)) (toDynamic record) record
+      table = symbolVal (Proxy :: Proxy table)
+      eids =
+        -- TODO: remove table here
+        [ gatherIds table (toDynamic record) record
         | record <- records
         ]
 
@@ -241,7 +247,7 @@ instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
 
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
   gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
-  gResolve rsvMap (Named Remove, us) = (Named (error "gResolve: Remove: this is a bug"), gResolve rsvMap us)
+  gResolve rsvMap (Named (Remove _), us) = (Named (error "gResolve: Remove: this is a bug"), gResolve rsvMap us)
 
 instance (GResolve us rs, Functor f) => GResolve (Named x (f (RecordId u)), us) (Named x (f u), rs) where
   gResolve rsvMap (Named u', us) = (Named $ fmap (\(Id u) -> u) u', gResolve rsvMap us)
@@ -302,21 +308,28 @@ instance
 -- ResolveTables ---------------------------------------------------------------
 
 class GResolveTables u t where
-  gResolveTables :: (TableName -> FieldName -> FieldValue -> Dynamic) -> u -> t
+  gResolveTables :: [[Bool]] -> (TableName -> FieldName -> FieldValue -> Dynamic) -> u -> t
 
 instance GResolveTables () () where
-  gResolveTables _ () = ()
+  gResolveTables _ _ () = ()
 
 instance GResolveTables u t => GResolveTables (Either u Void) (Either t Void) where
-  gResolveTables rsvMap (Left u) = Left $ gResolveTables rsvMap u
-  gResolveTables _ _ = undefined
+  gResolveTables notRemoved rsvMap (Left u) = Left $ gResolveTables notRemoved rsvMap u
+  gResolveTables _ _ _ = undefined
 
 instance
   ( GResolveTables us ts
   , KnitRecord tables t 
   ) => GResolveTables (Named table [t tables 'Unresolved], us) (Named table [t tables 'Resolved], ts) where
-    gResolveTables rsvMap (Named ts, us)
-      = (Named $ map (resolve rsvMap) ts, gResolveTables rsvMap us)
+    gResolveTables (notRemoved:notRemoved') rsvMap (Named ts, us)
+      = (Named resolved, gResolveTables notRemoved' rsvMap us)
+      where
+        resolved =
+          [ resolve rsvMap t
+          | (nr, t) <- zip notRemoved ts
+          , nr
+          ]
+    gResolveTables [] _ _ = error "gResolveTables: [] (this is a bug)"
 
 -- KnitRecord ------------------------------------------------------------------
 
@@ -364,43 +377,99 @@ class KnitTables t where
     -> Either ResolveError (t 'Resolved)
   resolveTables extRsvMap u
     | not (null repeatingIds) = Left $ RepeatingIds repeatingIds
-    | [] <- missingIds = Right $ fromEot $ gResolveTables rsv (toEot u)
+    | [] <- missingIds = Right $ fromEot $ gResolveTables notRemovedIds rsv (toEot u)
     | otherwise = Left $ MissingIds missingIds
     where
       eids = gatherTableIds u
 
-      eidMap = M.fromListWith (<>)
-        [ ((table, field, show k), [record])
-        | EId table field k record <- eids
+      notRemovedIds =
+        [ [ and
+              [ case eid of
+                  EId table field k _ -> not ((table, field, show k) `S.member` removedRecords)
+                  ERemove _ _ _ _ -> False
+                  _ -> True
+              | eid <- record
+              ]
+          | record <- records
+          ]
+        | (_, records) <- eids
         ]
+
+      recordMap = M.fromListWith (<>) $ mconcat
+        [ mconcat
+            [ case eid of
+                EId table field k r -> [((table, field, show k), [(r, True, fids)])]
+                ERemove table field k r -> [((table, field, show k), [(r, False, fids)])]
+                _ -> []
+            | eid <- record
+            ]
+        | (_, records) <- eids
+        , record <- records
+        , let fids =
+                [ fid
+                | fid@(EForeignId _ _ _) <- record
+                ]
+        ]
+
+      reverseMap = M.fromListWith (<>) $ mconcat
+        [ [ ((ftable, ffield, show fk), S.singleton (table, field, k))
+          | EForeignId ftable ffield fk <- fids
+          ]
+        | ((table, field, k), [(_, _, fids)]) <- M.toList recordMap
+        ]
+
+      removedRecords = ST.runST $ do
+        m <- H.new
+
+        let markRemoved (table, field, k) = do
+              v <- H.lookup m (table, field, k)
+
+              case v of
+                Nothing -> do
+                  H.insert m (table, field, k) True
+
+                  sequence_
+                    [ markRemoved (ftable, ffield, fk)
+                    | Just fids <- [ M.lookup (table, field, k) reverseMap ]
+                    , (ftable, ffield, fk) <- S.toList fids
+                    ]
+                Just _ -> pure ()
+
+        sequence_
+          [ markRemoved k
+          | (k, [(_, False, _)]) <- M.toList recordMap
+          ]
+
+        S.fromList . fmap fst <$> HC.toList m
 
       repeatingIds = mconcat
         [ if length records > 1
             then [(table, field, k)]
             else []
-        | ((table, field, k), records) <- M.toList eidMap
+        | ((table, field, k), records) <- M.toList recordMap
         ]
 
       missingIds = catMaybes
-        [ case M.lookup (table, field, show k) eidMap of
+        [ case M.lookup (table, field, show k) recordMap of
             Nothing -> Just (table, field, show k)
             Just _ -> Nothing
-        | EForeignId table field k <- eids
+        | (_, [(_, _, fids)]) <- M.toList recordMap
+        , EForeignId table field k <- fids
         ]
 
-      rsvRecord table field value = M.lookup (table, field, value) eidMap
+      rsvRecord table field value = M.lookup (table, field, value) recordMap
 
       rsv table field value = case rsvRecord table field value of
         Nothing -> extRsvMap table field value
-        Just [record] -> record
+        Just [(record, _, _)] -> record
         _ -> error "resolveTables: repeating ids (this is a bug, the consistency check should have caught this)"
 
-  gatherTableIds :: t 'Unresolved -> [EId]
+  gatherTableIds :: t 'Unresolved -> [(TableName, [[EId]])]
   default gatherTableIds
     :: HasEot (t 'Unresolved)
     => GGatherTableIds (Eot (t 'Unresolved))
     => t 'Unresolved
-    -> [EId]
+    -> [(TableName, [[EId]])]
   gatherTableIds = gGatherTableIds . toEot
 
 -- Expand ----------------------------------------------------------------------

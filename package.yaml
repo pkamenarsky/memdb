@@ -27,6 +27,7 @@ dependencies:
 - containers
 - deepseq
 - generics-eot
+- hashtables
 - leveldb-haskell
 - vector
 

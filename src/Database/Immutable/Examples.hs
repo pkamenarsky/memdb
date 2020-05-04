@@ -24,6 +24,7 @@ deriving instance Show (Person Model Resolved)
 
 data Model m = Model
   { persons :: Table Model m Person
+  , friends :: Table Model m Person
   } deriving (Generic, KnitTables)
 
 deriving instance Show (Model Resolved)
@@ -38,6 +39,12 @@ model = Model
   -- You may disagree, but the cat thinks of itself as Person
   , Person (Id "cat") [ ForeignId "cat" ]
   ]
+  [ Person (Id "Alice") [ ForeignId "Bob", ForeignId "cat" ]
+  , Person (Id "Bob") [ ForeignId "Alice" ]
+
+  -- You may disagree, but the cat thinks of itself as Person
+  , Person (Id "cat") [ ForeignId "cat" ]
+  ]
 
 knitModel :: Model Resolved
 knitModel = case knit model of
@@ -46,6 +53,10 @@ knitModel = case knit model of
 
 manuallyKnitModel :: Model Resolved
 manuallyKnitModel = Model
+  [ alice
+  , bob
+  , cat
+  ]
   [ alice
   , bob
   , cat
