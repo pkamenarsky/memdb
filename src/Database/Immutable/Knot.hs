@@ -45,7 +45,7 @@ import           Data.Semigroup ((<>))
 import           GHC.Generics (Generic)
 import           GHC.TypeLits (KnownSymbol, Symbol, TypeError, ErrorMessage(..), symbolVal)
 import qualified Generics.Eot as Eot
-import           Generics.Eot (Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
+import           Generics.Eot (Datatype (Datatype), Constructor (Constructor), Fields (Selectors), Eot, HasEot, Named (Named), Void, Proxy (..), fromEot, toEot)
 
 import           Unsafe.Coerce (unsafeCoerce)
 
@@ -114,6 +114,11 @@ toDynamic = Dynamic . unsafeCoerce
 
 fromDynamic :: Dynamic -> a
 fromDynamic (Dynamic v) = unsafeCoerce v
+
+unconsField :: Datatype -> (String, Datatype)
+unconsField (Datatype dname ((Constructor cname (Selectors (field:fields))):cs))
+  = (field, Datatype dname ((Constructor cname (Selectors fields)):cs))
+unconsField _ = error "unconsField (this is a bug)"
 
 --------------------------------------------------------------------------------
 
@@ -230,29 +235,32 @@ instance NFData ResolveError
 
 class GResolve u r where
   gResolve
-    :: (TableName -> FieldName -> FieldValue -> Dynamic)
+    :: Datatype
+    -> (TableName -> FieldName -> FieldValue -> Dynamic)
     -> u
     -> r
 
 instance GResolve () () where
-  gResolve _ () = ()
+  gResolve _ _ () = ()
 
 instance GResolve Void Void where
-  gResolve _ _ = undefined
+  gResolve _ _ _ = undefined
 
 instance (GResolve u r, GResolve t s) => GResolve (Either u t) (Either r s) where
-  gResolve rsvMap (Left u) = Left $ gResolve rsvMap u 
-  gResolve rsvMap (Right u) = Right $ gResolve rsvMap u 
+  gResolve dt rsvMap (Left u) = Left $ gResolve dt rsvMap u 
+  gResolve (Datatype dn (_:cs)) rsvMap (Right u) = Right $ gResolve (Datatype dn cs) rsvMap u 
 
 instance (GResolve us rs) => GResolve (Named x u, us) (Named x u, rs) where
-  gResolve rsvMap (u, us) = (u, gResolve rsvMap us)
+  gResolve dt rsvMap (u, us) = (u, gResolve dt' rsvMap us)
+    where
+      (_, dt') = unconsField dt
 
 instance (GResolve us rs) => GResolve (Named x (RecordId u), us) (Named x u, rs) where
-  gResolve rsvMap (Named (Id u), us) = (Named u, gResolve rsvMap us)
-  gResolve rsvMap (Named (Remove _), us) = (Named (error "gResolve: Remove: this is a bug"), gResolve rsvMap us)
+  gResolve dt rsvMap (Named (Id u), us) = (Named u, gResolve (snd $ unconsField dt) rsvMap us)
+  gResolve dt rsvMap (Named (Remove _), us) = (Named (error "gResolve: Remove: this is a bug"), gResolve (snd $ unconsField dt) rsvMap us)
 
 instance (GResolve us rs, Functor f) => GResolve (Named x (f (RecordId u)), us) (Named x (f u), rs) where
-  gResolve rsvMap (Named u', us) = (Named $ fmap (\(Id u) -> u) u', gResolve rsvMap us)
+  gResolve dt rsvMap (Named u', us) = (Named $ fmap (\(Id u) -> u) u', gResolve (snd $ unconsField dt) rsvMap us)
 
 instance
   ( Show u
